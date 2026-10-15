@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PetroKenya">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/styles.css">
+<link rel="stylesheet" href="css/styles.css?v=2">
 </head>
 <body>
 
@@ -66,7 +66,7 @@
     </div>
     <div class="station-grp">
       <label>OPERATOR:</label>
-      <input type="text" id="fOperator" placeholder="Operator Name" value="John Kamau">
+      <input type="text" id="fOperator" placeholder="Sign in to fill" readonly title="Filled in from the signed-in account">
     </div>
     <div class="station-grp">
       <label>SHIFT:</label>
@@ -888,6 +888,15 @@
     <div class="m-sub" id="acctRole">—</div>
 
     <div class="m-sec">
+      <div class="m-sec-ttl">Your Name</div>
+      <div class="ig"><label for="meFullName">Full name (shown as Operator)</label>
+        <input type="text" id="meFullName" maxlength="60" placeholder="e.g. Mary Wanjiku" autocomplete="name"></div>
+      <div class="actions" style="margin-top:10px">
+        <button class="btn btn-b btn-sm" onclick="saveMyName()">💾 Save Name</button>
+      </div>
+    </div>
+
+    <div class="m-sec">
       <div class="m-sec-ttl">Change Password</div>
       <div class="g2" style="gap:10px">
         <div class="ig"><label for="pwCurrent">Current Password</label>
@@ -904,6 +913,8 @@
       <div class="m-sec-ttl">Users (Admin)</div>
       <div id="usersList"></div>
       <div class="g2" style="gap:10px;margin-top:12px">
+        <div class="ig"><label for="nuFullName">Full Name</label>
+          <input type="text" id="nuFullName" maxlength="60" placeholder="e.g. Mary Wanjiku"></div>
         <div class="ig"><label for="nuName">Username</label>
           <input type="text" id="nuName" autocapitalize="none" spellcheck="false"></div>
         <div class="ig"><label for="nuPass">Password (8+ chars)</label>
@@ -939,6 +950,6 @@
 
 <div id="toast"></div>
 
-<script src="js/app.js"></script>
+<script src="js/app.js?v=2"></script>
 </body>
 </html>

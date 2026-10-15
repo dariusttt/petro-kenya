@@ -454,12 +454,32 @@ class Auth:
                 expires_at REAL NOT NULL
             );
         """)
+        # Databases created before full names existed get the column added in place
+        cols = [r["name"] for r in store.conn.execute("PRAGMA table_info(users)").fetchall()]
+        if "full_name" not in cols:
+            store.conn.execute("ALTER TABLE users ADD COLUMN full_name TEXT")
         store.conn.commit()
 
     @staticmethod
     def public(row):
-        return {"id": row["id"], "username": row["username"], "role": row["role"],
+        full_name = row["full_name"] or None
+        return {"id": row["id"], "username": row["username"], "full_name": full_name,
+                "display_name": full_name or row["username"], "role": row["role"],
                 "station": row["station"] or None, "created_at": row["created_at"]}
+
+    @staticmethod
+    def clean_name(full_name):
+        name = " ".join(str(full_name or "").split())
+        if len(name) > 60:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Full name must be 60 characters or fewer")
+        return name or None
+
+    def set_full_name(self, user_id, full_name):
+        with self.store.lock:
+            self.store.conn.execute("UPDATE users SET full_name = ? WHERE id = ?",
+                                    (self.clean_name(full_name), user_id))
+            self.store.conn.commit()
+        return self.get(user_id)
 
     def count(self):
         with self.store.lock:
@@ -470,8 +490,9 @@ class Auth:
             rows = self.store.conn.execute("SELECT * FROM users ORDER BY username").fetchall()
         return [self.public(r) for r in rows]
 
-    def create(self, username, password, role="staff", station=None):
+    def create(self, username, password, role="staff", station=None, full_name=None):
         username = (username or "").strip()
+        full_name = self.clean_name(full_name)
         if not USERNAME_RE.match(username):
             raise ApiError(HTTPStatus.BAD_REQUEST,
                            "Username must be 3-32 letters, numbers, dots, dashes or underscores")
@@ -484,8 +505,9 @@ class Auth:
         try:
             with self.store.lock:
                 cur = self.store.conn.execute(
-                    "INSERT INTO users (username, pw_hash, role, station, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (username, hash_password(password), role, station, now_iso()))
+                    "INSERT INTO users (username, pw_hash, role, station, full_name, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (username, hash_password(password), role, station, full_name, now_iso()))
                 self.store.conn.commit()
         except sqlite3.IntegrityError:
             raise ApiError(HTTPStatus.CONFLICT, "That username is already taken")
@@ -648,11 +670,11 @@ class Handler(BaseHTTPRequestHandler):
         ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype.endswith(("json", "javascript")):
             ctype += "; charset=utf-8"
-        # HTML and the service worker must revalidate so app updates reach phones
-        fresh = rel in ("index.html", "sw.js") or rel.endswith(".webmanifest")
+        # Only icons may be cached; the page, its CSS and JS must always revalidate so an
+        # update never pairs new HTML with yesterday's script
+        cache = "public, max-age=86400" if rel.startswith("icons/") else "no-cache"
         with open(full, "rb") as f:
-            self._send(HTTPStatus.OK, f.read(), ctype,
-                       {"Cache-Control": "no-cache" if fresh else "public, max-age=3600"})
+            self._send(HTTPStatus.OK, f.read(), ctype, {"Cache-Control": cache})
 
     # ── Permissions ──
     @staticmethod
@@ -724,6 +746,9 @@ class Handler(BaseHTTPRequestHandler):
             token, _ = self.auth.login(user["username"], body.get("new_password"), self._client_ip())
             return self._json(HTTPStatus.OK, {"ok": True},
                               {"Set-Cookie": self._cookie(token, SESSION_DAYS * 86400)})
+        if path == "/api/me/name" and m == "POST":
+            updated = self.auth.set_full_name(user["id"], self._body().get("full_name"))
+            return self._json(HTTPStatus.OK, {"user": updated})
         if path == "/api/stations" and m == "GET":
             scope = self._station_scope(user, None)
             return self._json(HTTPStatus.OK, {"stations": [scope] if scope else STATIONS})
@@ -751,6 +776,7 @@ class Handler(BaseHTTPRequestHandler):
                 rec = clean_input(self._body())
                 self._station_scope(user, rec["station"])
                 rec["saved_by"] = user["username"]
+                rec["operator"] = user["display_name"]   # who entered it, not typed by hand
                 saved, created = self.store.save(rec)
                 return self._json(HTTPStatus.CREATED if created else HTTPStatus.OK,
                                   {"created": created, "record": saved})
@@ -768,6 +794,7 @@ class Handler(BaseHTTPRequestHandler):
                 rec = clean_input(self._body())
                 self._station_scope(user, rec["station"])
                 rec["saved_by"] = user["username"]
+                rec["operator"] = user["display_name"]   # who entered it, not typed by hand
                 saved, _ = self.store.save(rec, rec_id=rec_id)
                 return self._json(HTTPStatus.OK, {"created": False, "record": saved})
             if m == "DELETE":
@@ -782,7 +809,8 @@ class Handler(BaseHTTPRequestHandler):
             if m == "POST":
                 body = self._body()
                 created = self.auth.create(body.get("username"), body.get("password"),
-                                           body.get("role") or "staff", body.get("station"))
+                                           body.get("role") or "staff", body.get("station"),
+                                           body.get("full_name"))
                 return self._json(HTTPStatus.CREATED, {"user": created})
 
         mm = re.fullmatch(r"/api/users/(\d+)(/password)?", path)
@@ -833,7 +861,7 @@ def make_server(host=HOST, port=PORT, db_path=DB_PATH, bootstrap=True):
 
 
 def cli(argv):
-    """create-user NAME [--role admin|staff] [--station NAME]  |  reset-password NAME"""
+    """create-user NAME [--role admin|staff] [--station NAME] [--name "Full Name"]  |  reset-password NAME"""
     store = Store(DB_PATH)
     auth = Auth(store)
     cmd, name, opts = argv[0], argv[1] if len(argv) > 1 else None, argv[2:]
@@ -843,7 +871,8 @@ def cli(argv):
     password = getpass.getpass("Password for %s: " % name)
     try:
         if cmd == "create-user":
-            u = auth.create(name, password, flags.get("--role", "staff"), flags.get("--station"))
+            u = auth.create(name, password, flags.get("--role", "staff"), flags.get("--station"),
+                            flags.get("--name"))
             print("Created %s (%s%s)" % (u["username"], u["role"], ", " + u["station"] if u["station"] else ""))
         elif cmd == "reset-password":
             row = auth.find(name)
