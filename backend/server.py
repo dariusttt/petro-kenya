@@ -97,7 +97,7 @@ TEXT_FIELDS = [
 LIST_FIELDS = ["misc_items", "gas_items", "invoices"]
 
 CSV_COLS = [
-    "report_date", "station",
+    "report_date", "station", "operator",
     "petrol_litres", "diesel_litres", "kero_litres", "total_litres",
     "gross_revenue", "mpesa_amount", "cash_amount", "credit_amount", "card_amount",
     "total_expenses", "net_profit", "profit_margin",
@@ -775,8 +775,8 @@ class Handler(BaseHTTPRequestHandler):
             if m == "POST":
                 rec = clean_input(self._body())
                 self._station_scope(user, rec["station"])
-                rec["saved_by"] = user["username"]
-                rec["operator"] = user["display_name"]   # who entered it, not typed by hand
+                existing = self.store.list(rec["station"], rec["report_date"])
+                stamp_operator(rec, existing[0] if existing else None, user)
                 saved, created = self.store.save(rec)
                 return self._json(HTTPStatus.CREATED if created else HTTPStatus.OK,
                                   {"created": created, "record": saved})
@@ -790,11 +790,10 @@ class Handler(BaseHTTPRequestHandler):
             if m == "GET":
                 return self._json(HTTPStatus.OK, self._own_record(user, rec_id))
             if m == "PUT":
-                self._own_record(user, rec_id)
+                existing = self._own_record(user, rec_id)
                 rec = clean_input(self._body())
                 self._station_scope(user, rec["station"])
-                rec["saved_by"] = user["username"]
-                rec["operator"] = user["display_name"]   # who entered it, not typed by hand
+                stamp_operator(rec, existing, user)
                 saved, _ = self.store.save(rec, rec_id=rec_id)
                 return self._json(HTTPStatus.OK, {"created": False, "record": saved})
             if m == "DELETE":
@@ -830,6 +829,22 @@ class Handler(BaseHTTPRequestHandler):
                        "No route for %s %s" % (m, path))
 
     do_GET = do_POST = do_PUT = do_DELETE = do_HEAD = _dispatch
+
+
+def stamp_operator(rec, existing, user):
+    """The day's operator is whoever first saved that day's sales; later saves only note who
+    changed it. Names always come from the signed-in account, never from the form."""
+    name = user["display_name"]
+    if existing and existing.get("operator"):
+        rec["operator"] = existing["operator"]
+        rec["operator_username"] = existing.get("operator_username") or existing.get("saved_by")
+        rec["operator_saved_at"] = existing.get("operator_saved_at") or existing.get("created_at")
+    else:
+        rec["operator"] = name
+        rec["operator_username"] = user["username"]
+        rec["operator_saved_at"] = now_iso()
+    rec["saved_by"] = user["username"]
+    rec["last_edited_by"] = name
 
 
 def bootstrap_admin(auth):

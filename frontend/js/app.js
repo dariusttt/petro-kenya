@@ -564,6 +564,8 @@ function populateFormFromRecord(r) {
   setVal('fMpesaTill', r.mpesa_till); setVal('fMpesaRef', r.mpesa_ref);
   setVal('fCreditCust', r.credit_customer);
   if (r.shift) setVal('fShift', r.shift);
+  // A saved day keeps the operator who recorded its sales
+  setVal('fOperator', r.operator || displayName(USER));
 
   // Credit field lock state follows invoice presence, same rule used elsewhere
   if ($('fCredit')) $('fCredit').readOnly = INVOICES.length > 0;
@@ -587,6 +589,8 @@ function clearFormForNewEntry() {
   if ($('fCredit')) { $('fCredit').readOnly = false; $('fCredit').value = ''; }
   // eMisc is readonly (driven by MISC_ITEMS), so the loop above skips it
   if ($('eMisc')) $('eMisc').value = '';
+  // A new day is recorded under whoever is signed in
+  if ($('fOperator')) $('fOperator').value = displayName(USER);
 
   renderInvoices();
   renderMiscItems();
@@ -1028,7 +1032,7 @@ function loadRecs() {
   if (!tbody) return;
 
   if (!display.length) {
-    tbody.innerHTML = `<tr><td colspan="14" style="text-align:center;padding:36px;
+    tbody.innerHTML = `<tr><td colspan="15" style="text-align:center;padding:36px;
       color:var(--mut);font-family:var(--mono);font-size:.76rem">
       ${filterBranch ? `No records for ${esc(filterBranch)} yet.` : 'No records saved yet.'}<br>
       Fill in today\'s data and click 💾 Save Daily Record.
@@ -1055,6 +1059,7 @@ function loadRecs() {
         <td style="color:var(--mut)">${idLabel}</td>
         <td>${esc(r.report_date || '—')}</td>
         <td style="color:var(--acc2);max-width:120px;overflow:hidden;text-overflow:ellipsis">${esc(r.station || '—')}</td>
+        <td>${esc(r.operator || '—')}</td>
         <td>${fmtL(pLit)}</td>
         <td>${fmtL(dLit)}</td>
         <td style="color:var(--blue)">${fmtL(totLit)}</td>
@@ -1073,7 +1078,7 @@ function loadRecs() {
     }).join('');
   } catch(e) {
     console.error('loadRecs render error:', e);
-    tbody.innerHTML = `<tr><td colspan="14" style="color:var(--red);padding:20px;font-family:var(--mono);font-size:.74rem">
+    tbody.innerHTML = `<tr><td colspan="15" style="color:var(--red);padding:20px;font-family:var(--mono);font-size:.74rem">
       Render error: ${esc(e.message)}
     </td></tr>`;
   }
@@ -1121,6 +1126,7 @@ function openDetail(evt, id) {
         { weekday:'long', day:'numeric', month:'long', year:'numeric' })
     : (r.created_at ? new Date(r.created_at).toLocaleDateString('en-KE') : '—');
   if (r.operator) $('rdDate').textContent += '  ·  Operator: ' + r.operator;
+  if (r.last_edited_by && r.last_edited_by !== r.operator) $('rdDate').textContent += '  ·  Last changed by: ' + r.last_edited_by;
 
   // Fuel
   $('rdPetrol').textContent = fmtL(num(r.petrol_litres)) + ' L  ·  KES ' + fmt(num(r.petrol_litres) * num(r.petrol_price));
@@ -1402,7 +1408,7 @@ $('accountOverlay').addEventListener('click', e => { if(e.target===$('accountOve
 function exportCSV() {
   if (!RECS.length) { toast('⚠️ No records to export yet', true); return; }
   const cols = [
-    'report_date','station',
+    'report_date','station','operator',
     'petrol_litres','diesel_litres','kero_litres','total_litres',
     'gross_revenue','mpesa_amount','cash_amount','credit_amount','card_amount',
     'total_expenses','net_profit','profit_margin',

@@ -215,6 +215,16 @@ class ServerTest(unittest.TestCase):
         rec = mary.req("POST", "/api/records", {**SAMPLE, "operator": "Someone Else"})[1]["record"]
         self.assertEqual(rec["operator"], "Mary Wanjiku")   # typed value is ignored
 
+        # Someone else correcting the day keeps Mary as that day's operator
+        fixed = self.admin.req("POST", "/api/records", {**SAMPLE, "exp_wages": 1500})[1]["record"]
+        self.assertEqual((fixed["operator"], fixed["last_edited_by"]), ("Mary Wanjiku", "boss"))
+        put = self.admin.req("PUT", "/api/records/%d" % rec["id"], SAMPLE)[1]["record"]
+        self.assertEqual(put["operator"], "Mary Wanjiku")
+        # A new day is recorded under whoever saves it first
+        other = self.admin.req("POST", "/api/records", {**SAMPLE, "report_date": "2026-10-15"})[1]["record"]
+        self.assertEqual(other["operator"], "boss")
+        self.assertIn(",Mary Wanjiku,", self.admin.req("GET", "/api/export.csv")[1])
+
         updated = mary.req("POST", "/api/me/name", {"full_name": "Mary W. Kamau"})[1]["user"]
         self.assertEqual(updated["display_name"], "Mary W. Kamau")
         self.assertEqual(mary.req("POST", "/api/me/name", {"full_name": "x" * 61})[0], 400)
