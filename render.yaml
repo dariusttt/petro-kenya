@@ -1,0 +1,25 @@
+# One-click hosting on Render (https://render.com) — New → Blueprint → pick this repo.
+# The persistent disk keeps the SQLite database across deploys (requires a paid instance).
+services:
+  - type: web
+    name: petrokenya
+    runtime: python
+    plan: starter
+    buildCommand: "true"
+    startCommand: python3 backend/server.py
+    healthCheckPath: /api/health
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: PK_DB
+        value: /var/data/petrokenya.sqlite3
+      - key: PK_SECURE_COOKIE
+        value: "1"
+      - key: PK_ADMIN_USER
+        value: admin
+      - key: PK_ADMIN_PASSWORD
+        sync: false   # Render asks you to type this in when you create the service
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1
