@@ -394,8 +394,17 @@ def to_csv(records):
     w = csv.writer(buf, lineterminator="\n")
     w.writerow(CSV_COLS)
     for r in records:
-        w.writerow(["" if r.get(c) is None else r.get(c) for c in CSV_COLS])
+        w.writerow([csv_cell(r.get(c)) for c in CSV_COLS])
     return buf.getvalue()
+
+
+def csv_cell(v):
+    """Text that starts like a formula is prefixed with ' so spreadsheet apps show it, not run it."""
+    if v is None:
+        return ""
+    if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + v
+    return v
 
 
 

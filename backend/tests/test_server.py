@@ -197,6 +197,12 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(len(csv_text.strip().splitlines()), 4)
         self.assertEqual(self.admin.req("DELETE", "/api/records?station=Kisumu%20Branch")[1]["deleted"], 1)
 
+    def test_csv_export_neutralises_formulas(self):
+        self.admin.req("POST", "/api/records", {**SAMPLE, "kra_business": "=HYPERLINK(\"http://x\")"})
+        csv_text = self.admin.req("GET", "/api/export.csv")[1]
+        self.assertIn("'=HYPERLINK", csv_text)
+        self.assertNotIn(",=HYPERLINK", csv_text)
+
     def test_put_conflict(self):
         a = self.admin.req("POST", "/api/records", SAMPLE)[1]
         self.admin.req("POST", "/api/records", {**SAMPLE, "report_date": "2026-10-13"})
