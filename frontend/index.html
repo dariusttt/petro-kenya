@@ -134,7 +134,8 @@
   <hr class="sep">
 
   <!-- ══ TABS ══ -->
-  <div class="tabs" id="tabBar">
+  <div class="workspace">
+  <div class="tabs" id="tabBar" role="tablist" aria-orientation="vertical">
     <button class="tab-btn on"  onclick="tab('fuel',this)">⛽ Fuel Entry</button>
     <button class="tab-btn"     onclick="tab('pay',this)">💳 Payments</button>
     <button class="tab-btn"     onclick="tab('gas',this)">🛢️ Gases & Lubricants</button>
@@ -145,6 +146,7 @@
     <button class="tab-btn"     onclick="tab('rec',this)">🗂️ Records</button>
   </div>
 
+  <div class="panels">
   <!-- ══ PANEL: FUEL ══ -->
   <div class="panel on" id="p-fuel">
     <div class="g2">
@@ -700,6 +702,9 @@
       </table>
     </div>
   </div>
+
+  </div><!-- /panels -->
+  </div><!-- /workspace -->
 
 </main>
 

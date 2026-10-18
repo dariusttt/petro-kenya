@@ -502,6 +502,8 @@ function tab(name, btn) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('on'));
   $('p-'+name).classList.add('on');
   btn.classList.add('on');
+  // On phones the menu sits above the section, so jump down to what was opened
+  if (window.matchMedia('(max-width:760px)').matches) $('p-'+name).scrollIntoView({ block: 'start' });
   if (name === 'ana') renderAnalytics();
   if (name === 'rec') loadRecs();
 }
