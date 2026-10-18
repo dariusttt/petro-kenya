@@ -112,7 +112,7 @@ async function doLogin(evt) {
     $('loginPass').value = '';
     $('loginOverlay').classList.remove('open');
     await startSession();
-    toast('👋 Welcome, ' + USER.username);
+    toast('👋 Welcome, ' + displayName(USER));
   } catch (e) {
     $('loginError').textContent = e.message;
   } finally {
@@ -124,6 +124,7 @@ async function logout() {
   try { await api('POST', '/logout'); } catch (e) { /* already signed out */ }
   USER = null;
   RECS = [];
+  $('fOperator').value = '';
   try { localStorage.removeItem(CACHE_KEY); localStorage.removeItem('pk_user'); } catch (e) { /* ignore */ }
   closeAccount();
   clearFormForNewEntry();
@@ -132,11 +133,15 @@ async function logout() {
   showLogin();
 }
 
+const displayName = u => (u && (u.display_name || u.full_name || u.username)) || '';
+
 // Lock the UI to what this user is allowed to do
 function applyUserToUI() {
   const isAdmin = USER && USER.role === 'admin';
   const fixed = USER && USER.role === 'staff' && USER.station;
-  $('userBtn').textContent = '👤 ' + (USER ? USER.username : 'Sign in');
+  $('userBtn').textContent = '👤 ' + (USER ? displayName(USER) : 'Sign in');
+  // The operator is whoever is signed in; the server records the same name on save
+  $('fOperator').value = displayName(USER);
   const sel = $('fStation');
   if (fixed) sel.value = USER.station;
   sel.disabled = !!fixed;
@@ -156,7 +161,8 @@ async function startSession() {
 
 function openAccount() {
   if (!USER) { showLogin(); return; }
-  $('acctName').textContent = USER.username;
+  $('acctName').textContent = displayName(USER);
+  $('meFullName').value = USER.full_name || '';
   $('acctRole').textContent = USER.role === 'admin' ? 'Administrator — all branches'
     : 'Staff — ' + (USER.station || 'all branches');
   $('usersSec').style.display = USER.role === 'admin' ? 'block' : 'none';
@@ -165,6 +171,17 @@ function openAccount() {
   $('accountOverlay').classList.add('open');
 }
 function closeAccount() { $('accountOverlay').classList.remove('open'); }
+
+async function saveMyName() {
+  if (!requireOnline('change your name')) return;
+  try {
+    USER = (await api('POST', '/me/name', { full_name: sv('meFullName') })).user;
+    storeSet('pk_user', USER);
+    applyUserToUI();
+    $('acctName').textContent = displayName(USER);
+    toast('✅ Name saved — ' + displayName(USER));
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
 
 async function changePassword() {
   if (!requireOnline('change your password')) return;
@@ -181,7 +198,7 @@ async function loadUsers() {
     const { users } = await api('GET', '/users');
     list.innerHTML = users.map(u => `
       <div class="m-row" style="align-items:center;gap:8px">
-        <span>${esc(u.username)} <small style="color:var(--mut)">· ${esc(u.role)}${u.station ? ' · ' + esc(u.station) : ''}</small></span>
+        <span>${esc(displayName(u))} <small style="color:var(--mut)">· ${u.full_name ? esc(u.username) + ' · ' : ''}${esc(u.role)}${u.station ? ' · ' + esc(u.station) : ''}</small></span>
         <span style="display:flex;gap:6px">
           <button class="btn btn-o btn-xs" onclick="resetUserPassword(${u.id}, '${esc(u.username)}')">🔑</button>
           ${u.id === USER.id ? '' : `<button class="btn btn-r btn-xs" onclick="deleteUser(${u.id}, '${esc(u.username)}')">✕</button>`}
@@ -196,11 +213,11 @@ async function addUser() {
   if (!requireOnline('add users')) return;
   try {
     await api('POST', '/users', {
-      username: sv('nuName'), password: $('nuPass').value,
+      username: sv('nuName'), password: $('nuPass').value, full_name: sv('nuFullName'),
       role: sv('nuRole'), station: sv('nuStation')
     });
     toast('✅ User ' + sv('nuName') + ' added');
-    ['nuName','nuPass'].forEach(id => $(id).value = '');
+    ['nuName','nuPass','nuFullName'].forEach(id => $(id).value = '');
     loadUsers();
   } catch (e) { toast('⚠️ ' + e.message, true); }
 }
@@ -548,8 +565,9 @@ function populateFormFromRecord(r) {
   setVal('fFloat', r.float_amount); setVal('fBanked', r.banked_amount);
   setVal('fMpesaTill', r.mpesa_till); setVal('fMpesaRef', r.mpesa_ref);
   setVal('fCreditCust', r.credit_customer);
-  if (r.operator) setVal('fOperator', r.operator);
   if (r.shift) setVal('fShift', r.shift);
+  // A saved day keeps the operator who recorded its sales
+  setVal('fOperator', r.operator || displayName(USER));
 
   // Credit field lock state follows invoice presence, same rule used elsewhere
   if ($('fCredit')) $('fCredit').readOnly = INVOICES.length > 0;
@@ -573,6 +591,8 @@ function clearFormForNewEntry() {
   if ($('fCredit')) { $('fCredit').readOnly = false; $('fCredit').value = ''; }
   // eMisc is readonly (driven by MISC_ITEMS), so the loop above skips it
   if ($('eMisc')) $('eMisc').value = '';
+  // A new day is recorded under whoever is signed in
+  if ($('fOperator')) $('fOperator').value = displayName(USER);
 
   renderInvoices();
   renderMiscItems();
@@ -1014,7 +1034,7 @@ function loadRecs() {
   if (!tbody) return;
 
   if (!display.length) {
-    tbody.innerHTML = `<tr><td colspan="14" style="text-align:center;padding:36px;
+    tbody.innerHTML = `<tr><td colspan="15" style="text-align:center;padding:36px;
       color:var(--mut);font-family:var(--mono);font-size:.76rem">
       ${filterBranch ? `No records for ${esc(filterBranch)} yet.` : 'No records saved yet.'}<br>
       Fill in today\'s data and click 💾 Save Daily Record.
@@ -1041,6 +1061,7 @@ function loadRecs() {
         <td style="color:var(--mut)">${idLabel}</td>
         <td>${esc(r.report_date || '—')}</td>
         <td style="color:var(--acc2);max-width:120px;overflow:hidden;text-overflow:ellipsis">${esc(r.station || '—')}</td>
+        <td>${esc(r.operator || '—')}</td>
         <td>${fmtL(pLit)}</td>
         <td>${fmtL(dLit)}</td>
         <td style="color:var(--blue)">${fmtL(totLit)}</td>
@@ -1059,7 +1080,7 @@ function loadRecs() {
     }).join('');
   } catch(e) {
     console.error('loadRecs render error:', e);
-    tbody.innerHTML = `<tr><td colspan="14" style="color:var(--red);padding:20px;font-family:var(--mono);font-size:.74rem">
+    tbody.innerHTML = `<tr><td colspan="15" style="color:var(--red);padding:20px;font-family:var(--mono);font-size:.74rem">
       Render error: ${esc(e.message)}
     </td></tr>`;
   }
@@ -1106,6 +1127,8 @@ function openDetail(evt, id) {
     ? new Date(r.report_date + 'T00:00:00').toLocaleDateString('en-KE',
         { weekday:'long', day:'numeric', month:'long', year:'numeric' })
     : (r.created_at ? new Date(r.created_at).toLocaleDateString('en-KE') : '—');
+  if (r.operator) $('rdDate').textContent += '  ·  Operator: ' + r.operator;
+  if (r.last_edited_by && r.last_edited_by !== r.operator) $('rdDate').textContent += '  ·  Last changed by: ' + r.last_edited_by;
 
   // Fuel
   $('rdPetrol').textContent = fmtL(num(r.petrol_litres)) + ' L  ·  KES ' + fmt(num(r.petrol_litres) * num(r.petrol_price));
@@ -1387,7 +1410,7 @@ $('accountOverlay').addEventListener('click', e => { if(e.target===$('accountOve
 function exportCSV() {
   if (!RECS.length) { toast('⚠️ No records to export yet', true); return; }
   const cols = [
-    'report_date','station',
+    'report_date','station','operator',
     'petrol_litres','diesel_litres','kero_litres','total_litres',
     'gross_revenue','mpesa_amount','cash_amount','credit_amount','card_amount',
     'total_expenses','net_profit','profit_margin',

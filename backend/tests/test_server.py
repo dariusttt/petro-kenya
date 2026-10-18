@@ -95,13 +95,15 @@ class ServerTest(unittest.TestCase):
         status, html, _ = anon.req("GET", "/")
         self.assertEqual(status, 200)
         self.assertIn('href="manifest.webmanifest"', html)
-        self.assertIn('src="js/app.js"', html)
+        self.assertIn('src="js/app.js?v=', html)
         for path, ctype in [("/css/styles.css", "text/css"), ("/js/app.js", "javascript"),
                             ("/sw.js", "javascript"), ("/manifest.webmanifest", "manifest+json"),
                             ("/icons/icon-192.png", "image/png")]:
             r = anon.opener.open(self.base + path)
             self.assertEqual(r.status, 200, path)
             self.assertIn(ctype, r.headers["Content-Type"], path)
+        js = anon.opener.open(self.base + "/js/app.js?v=2")
+        self.assertEqual(js.headers["Cache-Control"], "no-cache")   # updates must reach browsers
         self.assertEqual(self.raw_get("/nope.html"), 404)
         self.assertEqual(self.raw_get("/../backend/server.py"), 404)
         self.assertEqual(self.raw_get("/%2e%2e/backend/server.py"), 404)
@@ -202,6 +204,33 @@ class ServerTest(unittest.TestCase):
         csv_text = self.admin.req("GET", "/api/export.csv")[1]
         self.assertIn("'=HYPERLINK", csv_text)
         self.assertNotIn(",=HYPERLINK", csv_text)
+
+    def test_operator_is_the_signed_in_users_name(self):
+        auth = self.httpd.RequestHandlerClass.auth
+        auth.create("mary", PASSWORD, "staff", full_name="  Mary   Wanjiku ")
+        mary = Client(self.base).login("mary")
+        me = mary.req("GET", "/api/me")[1]["user"]
+        self.assertEqual((me["full_name"], me["display_name"]), ("Mary Wanjiku", "Mary Wanjiku"))
+
+        rec = mary.req("POST", "/api/records", {**SAMPLE, "operator": "Someone Else"})[1]["record"]
+        self.assertEqual(rec["operator"], "Mary Wanjiku")   # typed value is ignored
+
+        # Someone else correcting the day keeps Mary as that day's operator
+        fixed = self.admin.req("POST", "/api/records", {**SAMPLE, "exp_wages": 1500})[1]["record"]
+        self.assertEqual((fixed["operator"], fixed["last_edited_by"]), ("Mary Wanjiku", "boss"))
+        put = self.admin.req("PUT", "/api/records/%d" % rec["id"], SAMPLE)[1]["record"]
+        self.assertEqual(put["operator"], "Mary Wanjiku")
+        # A new day is recorded under whoever saves it first
+        other = self.admin.req("POST", "/api/records", {**SAMPLE, "report_date": "2026-10-15"})[1]["record"]
+        self.assertEqual(other["operator"], "boss")
+        self.assertIn(",Mary Wanjiku,", self.admin.req("GET", "/api/export.csv")[1])
+
+        updated = mary.req("POST", "/api/me/name", {"full_name": "Mary W. Kamau"})[1]["user"]
+        self.assertEqual(updated["display_name"], "Mary W. Kamau")
+        self.assertEqual(mary.req("POST", "/api/me/name", {"full_name": "x" * 61})[0], 400)
+        cleared = mary.req("POST", "/api/me/name", {"full_name": ""})[1]["user"]
+        self.assertEqual(cleared["display_name"], "mary")   # falls back to the username
+        auth.delete(auth.find("mary")["id"])
 
     def test_put_conflict(self):
         a = self.admin.req("POST", "/api/records", SAMPLE)[1]
