@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PetroKenya">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/styles.css?v=4">
+<link rel="stylesheet" href="css/styles.css?v=5">
 </head>
 <body>
 
@@ -79,7 +79,7 @@
   </div>
 
   <!-- ── SUMMARY CARDS ── -->
-  <div class="stag">Live Summary — auto-calculated every keystroke</div>
+  <div class="stag home-only">Live Summary — auto-calculated every keystroke</div>
   <div class="cards">
     <div class="card" style="--c:#3ecf32">
       <div class="card-lbl">Total Sales</div>
@@ -131,24 +131,31 @@
     </div>
   </div>
 
-  <hr class="sep">
+  <hr class="sep home-only">
 
   <!-- ══ TABS ══ -->
   <div class="workspace">
-  <div class="tabs" id="tabBar" role="tablist" aria-orientation="vertical">
-    <button class="tab-btn on"  onclick="tab('fuel',this)">⛽ Fuel Entry</button>
-    <button class="tab-btn"     onclick="tab('pay',this)">💳 Payments</button>
-    <button class="tab-btn"     onclick="tab('gas',this)">🛢️ Gases & Lubricants</button>
-    <button class="tab-btn"     onclick="tab('dips',this)">📏 Dips</button>
-    <button class="tab-btn"     onclick="tab('exp',this)">📋 Expenses</button>
-    <button class="tab-btn"     onclick="tab('kra',this)">🇰🇪 KRA Filing</button>
-    <button class="tab-btn"     onclick="tab('ana',this)">📊 Analytics</button>
-    <button class="tab-btn"     onclick="tab('rec',this)">🗂️ Records</button>
+  <div class="tabs" id="tabBar" aria-label="Sections">
+    <button class="tab-btn" onclick="tab('fuel',this)"><span class="tab-name">⛽ Fuel Entry</span><span class="tab-desc">Pump meter readings, prices and litres sold</span></button>
+    <button class="tab-btn" onclick="tab('pay',this)"><span class="tab-name">💳 Payments</span><span class="tab-desc">M-Pesa, cash, card and credit collected</span></button>
+    <button class="tab-btn" onclick="tab('gas',this)"><span class="tab-name">🛢️ Gases & Lubricants</span><span class="tab-desc">LPG cylinders, oils and other items sold</span></button>
+    <button class="tab-btn" onclick="tab('dips',this)"><span class="tab-name">📏 Dips</span><span class="tab-desc">Tank stock check against pump sales</span></button>
+    <button class="tab-btn" onclick="tab('exp',this)"><span class="tab-name">📋 Expenses</span><span class="tab-desc">Daily costs and credit customer invoices</span></button>
+    <button class="tab-btn" onclick="tab('kra',this)"><span class="tab-name">🇰🇪 KRA Filing</span><span class="tab-desc">VAT, excise and road levy for the day</span></button>
+    <button class="tab-btn" onclick="tab('ana',this)"><span class="tab-name">📊 Analytics</span><span class="tab-desc">Last 7 days and all-time totals</span></button>
+    <button class="tab-btn" onclick="tab('rec',this)"><span class="tab-name">🗂️ Records</span><span class="tab-desc">Saved days for every branch</span></button>
   </div>
 
   <div class="panels">
+    <div class="page-bar">
+      <button class="btn btn-o back-btn" onclick="goHome()" aria-label="Back to menu">‹ Back</button>
+      <div style="min-width:0">
+        <div class="page-title" id="pageTitle">—</div>
+        <div class="page-ctx" id="pageCtx">—</div>
+      </div>
+    </div>
   <!-- ══ PANEL: FUEL ══ -->
-  <div class="panel on" id="p-fuel">
+  <div class="panel" id="p-fuel">
     <div class="g2">
       <!-- PETROL -->
       <div class="box">
@@ -955,6 +962,6 @@
 
 <div id="toast"></div>
 
-<script src="js/app.js?v=4"></script>
+<script src="js/app.js?v=5"></script>
 </body>
 </html>

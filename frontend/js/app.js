@@ -514,16 +514,55 @@ function setStatus(s) {
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
-function tab(name, btn) {
-  document.querySelectorAll('.panel').forEach(p => p.classList.remove('on'));
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('on'));
-  $('p-'+name).classList.add('on');
-  btn.classList.add('on');
-  // On phones the menu sits above the section, so jump down to what was opened
-  if (window.matchMedia('(max-width:760px)').matches) $('p-'+name).scrollIntoView({ block: 'start' });
-  if (name === 'ana') renderAnalytics();
-  if (name === 'rec') loadRecs();
+// ── Pages: the menu opens each section as its own page (#fuel, #pay …) ─────
+// The address hash keeps the browser / phone Back button working.
+const PAGES = ['fuel', 'pay', 'gas', 'dips', 'exp', 'kra', 'ana', 'rec'];
+let openedFromMenu = false;
+
+function showPage(name) {
+  const page = PAGES.includes(name) ? name : null;
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('on', p.id === 'p-' + page));
+  document.querySelectorAll('#tabBar .tab-btn').forEach(b =>
+    b.classList.toggle('on', (b.getAttribute('onclick') || '').includes("'" + page + "'")));
+  document.body.classList.toggle('in-page', !!page);
+  if (page) {
+    const btn = [...document.querySelectorAll('#tabBar .tab-btn')]
+      .find(b => (b.getAttribute('onclick') || '').includes("'" + page + "'"));
+    $('pageTitle').textContent = btn ? btn.querySelector('.tab-name').textContent : '';
+    updatePageContext();
+    if (page === 'ana') renderAnalytics();
+    if (page === 'rec') loadRecs();
+  }
+  window.scrollTo(0, 0);
 }
+
+function updatePageContext() {
+  const d = sv('fDate');
+  const when = d ? new Date(d + 'T00:00:00').toLocaleDateString('en-KE',
+    { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) : '';
+  $('pageCtx').textContent = [sv('fStation'), when].filter(Boolean).join(' · ');
+}
+
+function route() { showPage(location.hash.slice(1)); }
+
+// Called by the menu buttons
+function tab(name) {
+  openedFromMenu = true;
+  showPage(name);
+  try { if (location.hash !== '#' + name) location.hash = name; } catch (e) { /* no history here */ }
+}
+
+function goHome() {
+  if (openedFromMenu && location.hash) {
+    openedFromMenu = false;
+    history.back();                       // hashchange → route() shows the menu
+  } else {
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* ignore */ }
+    showPage(null);
+  }
+}
+
+window.addEventListener('hashchange', route);
 
 // ── Load a record into the form (used when switching to a date that has data) ─
 function populateFormFromRecord(r) {
@@ -1549,6 +1588,7 @@ async function init() {
 
 // Keep the date correct automatically if the app is left open overnight
 startMidnightWatcher();
+route();
 
 // Re-sync date and records when the app comes back to the foreground (phone unlock, tab switch)
 document.addEventListener('visibilitychange', () => {

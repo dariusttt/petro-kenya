@@ -273,20 +273,24 @@ header{padding-top:max(14px, env(safe-area-inset-top))}
   #toast{left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));max-width:none}
 }
 
-/* ════ VERTICAL MENU ════ */
-/* Sidebar menu on wide screens; on phones the list stacks above the section */
-.workspace{display:grid;grid-template-columns:230px minmax(0,1fr);gap:22px;align-items:start}
-.workspace .tabs{flex-direction:column;gap:3px;overflow:visible;margin-bottom:0;
-  border-bottom:none;border-right:1px solid var(--brd);padding-right:14px;
-  position:sticky;top:calc(env(safe-area-inset-top,0px) + 96px)}
-.workspace .tab-btn{text-align:left;white-space:normal;margin-bottom:0;padding:11px 14px;
-  border-bottom:none;border-left:3px solid transparent;border-radius:0 7px 7px 0;font-size:.76rem}
-.workspace .tab-btn.on{border-left-color:var(--acc);background:rgba(62,207,50,.08)}
-.panels{min-width:0}
-.panel{scroll-margin-top:calc(env(safe-area-inset-top,0px) + 120px)}
-@media (max-width:760px){
-  .workspace{grid-template-columns:minmax(0,1fr);gap:16px}
-  .workspace .tabs{position:static;border-right:none;padding-right:0;padding-bottom:12px;
-    border-bottom:1px solid var(--brd)}
-  .workspace .tab-btn{padding:12px 14px;font-size:.8rem}
-}
+/* ════ PAGES ════ */
+/* Home shows the summary and a menu; each menu item opens its section as a page of its own */
+.workspace{display:block}
+.workspace .tabs{flex-direction:column;gap:8px;overflow:visible;margin-bottom:0;border-bottom:none}
+.workspace .tab-btn{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:2px 12px;
+  text-align:left;white-space:normal;margin-bottom:0;padding:14px 16px;border:1px solid var(--brd);
+  border-radius:10px;background:var(--s1);font-size:.8rem;color:var(--txt)}
+.workspace .tab-btn::after{content:'›';grid-column:2;grid-row:1 / span 2;font-size:1.5rem;color:var(--mut);line-height:1}
+.workspace .tab-btn:hover{border-color:var(--acc);background:var(--s2)}
+.tab-name{grid-column:1;font-family:var(--sans);font-weight:700;font-size:.92rem}
+.tab-desc{grid-column:1;font-size:.7rem;color:var(--mut)}
+.page-bar{display:none;align-items:center;gap:14px;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--brd)}
+.page-title{font-weight:800;font-size:1.15rem;line-height:1.2}
+.page-ctx{font-family:var(--mono);font-size:.7rem;color:var(--mut);margin-top:3px}
+.back-btn{flex-shrink:0;padding:8px 14px;font-size:.8rem}
+/* Home view */
+body:not(.in-page) .panels .panel{display:none}
+/* Section page view */
+body.in-page .home-only,body.in-page .top-bar,body.in-page .cards,body.in-page .tabs{display:none}
+body.in-page .page-bar{display:flex}
+@media (min-width:761px){.workspace .tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}
