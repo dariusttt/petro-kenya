@@ -13,6 +13,7 @@ Uses only the Python standard library.
 Environment
     PORT, HOST            listen address (default 127.0.0.1:8000; use HOST=0.0.0.0 when hosted)
     PK_DB                 SQLite file (default backend/petrokenya.sqlite3)
+    PK_UPLOADS            folder for receipt photos (default: "uploads" next to the database)
     PK_ADMIN_USER/PK_ADMIN_PASSWORD   create this admin on first start if no users exist
     PK_SECURE_COOKIE=1    force the Secure cookie flag (auto-on behind HTTPS proxies)
     PK_SMTP_HOST, PK_SMTP_PORT, PK_SMTP_USER, PK_SMTP_PASSWORD, PK_SMTP_FROM
@@ -39,6 +40,7 @@ API (all JSON; everything except /api/health and /api/login needs a signed-in se
     GET    /api/alerts?all=1             POST /api/alerts/read {ids|all}   (manager, admin)
     GET|PUT /api/settings   POST /api/settings/test-email   (admin)
     GET    /api/reports/monthly?month=YYYY-MM&station=   (.csv for a download)
+    POST   /api/uploads {data: base64 photo, station}   GET /api/uploads/<id>
     GET    /api/analytics?station=       GET /api/export.csv?station=
     GET|POST /api/users   DELETE /api/users/<id>   POST /api/users/<id>/password   (admin)
 
@@ -123,7 +125,7 @@ TEXT_FIELDS = [
     "kra_pin", "kra_business", "kra_period", "kra_branch", "kra_etr",
     "kra_return_type", "kra_remarks",
 ]
-LIST_FIELDS = ["misc_items", "gas_items", "invoices", "deliveries", "attendants"]
+LIST_FIELDS = ["misc_items", "gas_items", "invoices", "deliveries", "attendants", "receipts"]
 FUELS = ("petrol", "diesel", "kero")
 
 CSV_COLS = [
@@ -905,7 +907,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "PetroKenya/2.0"
     store = None  # set in make_server()
     auth = None
-    settings = mailer = alerts = credit = None
+    settings = mailer = alerts = credit = uploads = None
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
@@ -935,12 +937,12 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, status, payload, extra=None):
         self._send(status, json.dumps(payload).encode("utf-8"), extra=extra)
 
-    def _body(self):
+    def _body(self, max_bytes=MAX_BODY):
         if "application/json" not in (self.headers.get("Content-Type") or ""):
             # Also blocks cross-site form posts, which cannot send this content type
             raise ApiError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Content-Type must be application/json")
         length = int(self.headers.get("Content-Length") or 0)
-        if length > MAX_BODY:
+        if length > max_bytes:
             raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body too large")
         raw = self.rfile.read(length) if length else b""
         try:
@@ -1028,6 +1030,14 @@ class Handler(BaseHTTPRequestHandler):
         rec["prices_set_by_owner"] = sorted(prices)
         rec["opening_mismatches"] = opening_mismatches(
             rec, self.store.previous(rec["station"], rec["report_date"]))
+        # Receipt photos must be real uploads from the same branch
+        receipts = []
+        for r in rec.get("receipts") or []:
+            up = self.uploads.get(str(r.get("upload_id") or ""))
+            if up and up["station"] == rec["station"]:
+                receipts.append({"id": r.get("id"), "upload_id": up["id"], "amount": num(r.get("amount")),
+                                 "label": str(r.get("label") or "Receipt")[:60]})
+        rec["receipts"] = receipts
         stamp_operator(rec, existing, user)
 
     def _own_record(self, user, rec_id, deleted=False):
@@ -1094,6 +1104,24 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/stations" and m == "GET":
             scope = self._station_scope(user, None)
             return self._json(HTTPStatus.OK, {"stations": [scope] if scope else STATIONS})
+        # ── Receipt photos ──
+        if path == "/api/uploads" and m == "POST":
+            body = self._body(max_bytes=5 * 1024 * 1024)
+            station = self._station_scope(user, body.get("station"))
+            if station not in STATIONS:
+                raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the branch the receipt belongs to")
+            saved = self.uploads.save(body.get("data"), station, user["username"], now_iso())
+            return self._json(HTTPStatus.CREATED, saved)
+        mm = re.fullmatch(r"/api/uploads/([0-9a-f]{32})", path)
+        if mm and m in ("GET", "HEAD"):
+            up = self.uploads.get(mm.group(1))
+            if not up or (user["role"] in ("staff", "manager") and user["station"]
+                          and up["station"] != user["station"]):
+                raise ApiError(HTTPStatus.NOT_FOUND, "Photo not found")
+            return self._send(HTTPStatus.OK, self.uploads.read(up["id"]), up["mime"],
+                              {"Cache-Control": "private, max-age=86400", "Content-Disposition": "inline",
+                               "Content-Security-Policy": "default-src 'none'"})
+
         if path == "/api/compute" and m == "POST":
             return self._json(HTTPStatus.OK, compute(self._body()))
         if path == "/api/analytics" and m == "GET":
@@ -1410,9 +1438,11 @@ def make_server(host=HOST, port=PORT, db_path=DB_PATH, bootstrap=True):
         bootstrap_admin(auth)
     settings = business.Settings(store)
     mailer = business.Mailer()
+    uploads_dir = os.environ.get("PK_UPLOADS") or os.path.join(os.path.dirname(os.path.abspath(db_path)), "uploads")
     handler = type("BoundHandler", (Handler,), {
         "store": store, "auth": auth, "settings": settings, "mailer": mailer,
-        "alerts": business.Alerts(store, settings, mailer), "credit": business.Credit(store)})
+        "alerts": business.Alerts(store, settings, mailer), "credit": business.Credit(store),
+        "uploads": business.Uploads(store, uploads_dir)})
     return ThreadingHTTPServer((host, port), handler)
 
 

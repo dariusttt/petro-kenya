@@ -49,7 +49,7 @@ class Client:
             with self.opener.open(r) as resp:
                 raw = resp.read()
                 is_json = "json" in resp.headers.get("Content-Type", "")
-                return resp.status, (json.loads(raw) if is_json else raw.decode()), resp.headers
+                return resp.status, (json.loads(raw) if is_json else raw.decode(errors="replace")), resp.headers
         except HTTPError as e:
             return e.code, json.loads(e.read()), e.headers
 
@@ -638,6 +638,39 @@ class BusinessTest(ServerCase):
         self.assertEqual(status, 200)
         self.assertIn("attachment", headers["Content-Disposition"])
         self.assertEqual(len(csv_text.strip().splitlines()), 4)     # header, 2 branches, totals
+
+
+class UploadTest(ServerCase):
+    JPEG = b"\xff\xd8\xff\xe0" + b"0" * 200
+    PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 50
+
+    def upload(self, client, data, station="Kisumu Branch"):
+        import base64
+        return client.req("POST", "/api/uploads", {"data": base64.b64encode(data).decode(), "station": station})
+
+    def test_photos_are_checked_and_kept_to_their_branch(self):
+        staff = Client(self.base).login("kisumu")
+        status, up, _ = self.upload(staff, self.JPEG)
+        self.assertEqual((status, up["mime"]), (201, "image/jpeg"))
+        self.assertEqual(self.upload(staff, b"<svg onload=alert(1)>")[0], 400)          # not a photo
+        self.assertEqual(self.upload(staff, self.PNG, station="Westlands Branch")[0], 403)
+        self.assertEqual(self.upload(staff, b"\xff\xd8\xff" + b"0" * (3 * 1024 * 1024))[0], 413)
+
+        r = staff.opener.open(self.base + "/api/uploads/" + up["id"])
+        self.assertEqual((r.status, r.headers["Content-Type"], r.read()[:3]), (200, "image/jpeg", b"\xff\xd8\xff"))
+        self.assertEqual(self.admin.req("GET", "/api/uploads/" + up["id"])[0], 200)
+        other = Client(self.base).login("roamer")                                      # no branch: all
+        self.assertEqual(other.req("GET", "/api/uploads/" + up["id"])[0], 200)
+        west = self.upload(self.admin, self.PNG, station="Westlands Branch")[1]
+        self.assertEqual(staff.req("GET", "/api/uploads/" + west["id"])[0], 404)
+        self.assertEqual(staff.req("GET", "/api/uploads/" + "0" * 32)[0], 404)
+        self.assertEqual(Client(self.base).req("GET", "/api/uploads/" + up["id"])[0], 401)
+
+        rec = staff.req("POST", "/api/records", {**SAMPLE, "station": "Kisumu Branch", "receipts": [
+            {"id": 1, "label": "Electricity token", "amount": 1500, "upload_id": up["id"]},
+            {"id": 2, "label": "Westlands photo", "upload_id": west["id"]},
+            {"id": 3, "label": "Made up", "upload_id": "f" * 32}]})[1]["record"]
+        self.assertEqual([(x["label"], x["upload_id"]) for x in rec["receipts"]], [("Electricity token", up["id"])])
 
 
 class BootstrapTest(unittest.TestCase):

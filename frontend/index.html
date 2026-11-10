@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PetroKenya">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/styles.css?v=8">
+<link rel="stylesheet" href="css/styles.css?v=9">
 </head>
 <body>
 
@@ -583,6 +583,25 @@
       <span>Sales After Expenses: <b id="eSalesAfterExp" style="color:var(--acc)">KES 0</b></span>
     </div>
 
+    <div class="box" style="margin-top:14px">
+      <div class="box-title">📷 Receipt Photos
+        <span style="margin-left:auto;font-family:var(--mono);font-size:.68rem;color:var(--mut)">Receipts and delivery notes for this day</span>
+      </div>
+      <div id="receiptsList" class="receipt-grid"></div>
+      <div class="g4">
+        <div class="ig"><label for="rcLabel">What is it for?</label>
+          <select id="rcLabel">
+            <option>Wages</option><option>Electricity / Generator</option><option>Water</option>
+            <option>Maintenance / Equipment</option><option>Lubricants / Oil Stock</option>
+            <option>Miscellaneous</option><option>Delivery note</option><option>Other</option>
+          </select></div>
+        <div class="ig"><label for="rcAmount">Amount (KES, optional)</label><input type="number" id="rcAmount" step="0.01"></div>
+        <div class="ig" style="grid-column:span 2"><label for="rcFile">Photo</label>
+          <input type="file" id="rcFile" accept="image/*" capture="environment"></div>
+      </div>
+      <div class="actions"><button class="btn btn-g" id="rcBtn" onclick="addReceipt()">📷 Add Photo</button></div>
+    </div>
+
     <hr class="sep">
 
     <!-- ═══ CREDIT / INVOICE CUSTOMERS ═══ -->
@@ -1002,6 +1021,11 @@
       <div id="rdMismatches"></div>
     </div>
 
+    <div class="m-sec" id="rdReceiptsSec" hidden>
+      <div class="m-sec-ttl">📷 Receipt Photos</div>
+      <div id="rdReceipts" class="receipt-grid"></div>
+    </div>
+
     <div class="m-sec" id="rdDeliveriesSec" hidden>
       <div class="m-sec-ttl">🚚 Deliveries</div>
       <div id="rdDeliveries"></div>
@@ -1220,6 +1244,6 @@
 
 <div id="toast"></div>
 
-<script src="js/app.js?v=8"></script>
+<script src="js/app.js?v=9"></script>
 </body>
 </html>

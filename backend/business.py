@@ -4,8 +4,12 @@ alerts (in-app and email) and monthly reports.
 Everything here shares the Store's SQLite connection and lock. Standard library only.
 """
 
+import base64
+import hashlib
 import json
 import os
+import re
+import secrets
 import smtplib
 import sys
 import threading
@@ -497,3 +501,72 @@ def monthly_report(records, month):
         totals[key] = r2(sum(b[key] for b in rows))
     return {"month": month, "fields": [{"key": k, "label": l} for k, l in REPORT_FIELDS],
             "branches": rows, "totals": totals, "daily": daily}
+
+
+# ── Receipt photos ────────────────────────────────────────────────────────────
+UPLOAD_MAX_BYTES = 3 * 1024 * 1024
+UPLOAD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+IMAGE_TYPES = [(b"\xff\xd8\xff", "image/jpeg"), (b"\x89PNG\r\n\x1a\n", "image/png")]
+
+
+def sniff_image(data):
+    """The image type from the file's first bytes (never trust the name or the browser)."""
+    for magic, mime in IMAGE_TYPES:
+        if data.startswith(magic):
+            return mime
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+class Uploads:
+    """Photos of receipts and delivery notes, stored as files next to the database."""
+
+    def __init__(self, store, folder):
+        self.store, self.folder = store, folder
+        os.makedirs(folder, exist_ok=True)
+        store.conn.execute("""
+            CREATE TABLE IF NOT EXISTS uploads (
+                id       TEXT PRIMARY KEY,
+                station  TEXT NOT NULL,
+                mime     TEXT NOT NULL,
+                size     INTEGER NOT NULL,
+                sha256   TEXT NOT NULL,
+                by_user  TEXT NOT NULL,
+                at       TEXT NOT NULL
+            )""")
+        store.conn.commit()
+
+    def save(self, data_b64, station, by, now):
+        raw = str(data_b64 or "")
+        if raw.startswith("data:"):
+            raw = raw.split(",", 1)[-1]
+        try:
+            data = base64.b64decode(raw, validate=True)
+        except (ValueError, TypeError):
+            raise Error(HTTPStatus.BAD_REQUEST, "The photo could not be read")
+        if not data or len(data) > UPLOAD_MAX_BYTES:
+            raise Error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Photos must be smaller than 3 MB")
+        mime = sniff_image(data)
+        if not mime:
+            raise Error(HTTPStatus.BAD_REQUEST, "Only JPEG, PNG or WebP photos can be uploaded")
+        uid = secrets.token_hex(16)
+        with open(os.path.join(self.folder, uid), "wb") as f:
+            f.write(data)
+        with self.store.lock:
+            self.store.conn.execute(
+                "INSERT INTO uploads (id, station, mime, size, sha256, by_user, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (uid, station, mime, len(data), hashlib.sha256(data).hexdigest(), by, now))
+            self.store.conn.commit()
+        return {"id": uid, "mime": mime, "size": len(data)}
+
+    def get(self, uid):
+        if not UPLOAD_ID_RE.match(uid or ""):
+            return None
+        with self.store.lock:
+            row = self.store.conn.execute("SELECT * FROM uploads WHERE id = ?", (uid,)).fetchone()
+        return dict(row) if row else None
+
+    def read(self, uid):
+        with open(os.path.join(self.folder, uid), "rb") as f:
+            return f.read()

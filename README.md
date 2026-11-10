@@ -59,8 +59,8 @@ Back up the database by downloading the `.sqlite3` file, or use **📥 Export CS
 1. Open your app's `https://` address in the phone's browser and sign in.
 2. **Android (Chrome):** tap **📲 Install** in the header, or ⋮ → *Install app*.
    **iPhone (Safari):** Share → *Add to Home Screen*.
-3. It opens full-screen from its own icon. Without internet it still opens and
-   shows the records from the last sync (read-only); saving needs a connection.
+3. It opens full-screen from its own icon. Without internet it still opens, shows the
+   records from the last sync, and keeps new saves on the phone until it reconnects.
 
 ## Accounts & permissions
 
@@ -111,6 +111,19 @@ Back up the database by downloading the `.sqlite3` file, or use **📥 Export CS
 - **📈 Monthly Report** (menu): one month's totals for each branch side by side, a
   day-by-day list, **Print / PDF** and **Download for Excel**.
 
+- **📷 Receipt Photos** (Expenses page): take or choose a photo of a receipt or delivery
+  note; it is shrunk on the phone and kept with the day. Tap a photo to open it full size.
+  Photos are stored in an `uploads` folder next to the database (on Render, on the
+  same disk) and only people who can see that branch can open them.
+
+**Saving without internet**
+
+Saving with no connection keeps the day on the phone ("⏳ Waiting to send" in Records,
+and the status pill shows how many are waiting). They are sent automatically when the
+connection returns or the app is opened again. If the server refuses one — for example
+the day was approved meanwhile — it stays listed with the reason and can be discarded.
+Photos, prices, alerts and credit accounts need a connection.
+
 **Alert emails** need a mail account on the server. With Gmail, turn on 2-step
 verification, create an *app password*, and set on the server:
 `PK_SMTP_HOST=smtp.gmail.com`, `PK_SMTP_PORT=587`, `PK_SMTP_USER=you@gmail.com`,
@@ -140,6 +153,7 @@ python3 backend/server.py reset-password mary
 | `PORT` | `8000` | Port to listen on |
 | `HOST` | `127.0.0.1` | `0.0.0.0` to accept connections from other devices / when hosted |
 | `PK_DB` | `backend/petrokenya.sqlite3` | Database file |
+| `PK_UPLOADS` | `uploads` next to the database | Folder for receipt photos |
 | `PK_ADMIN_USER`, `PK_ADMIN_PASSWORD` | — | Admin created on first start (otherwise `admin` + random password) |
 | `PK_SECURE_COOKIE` | auto | `1` forces the Secure cookie flag (auto when behind an HTTPS proxy) |
 | `PK_SMTP_HOST`, `PK_SMTP_PORT`, `PK_SMTP_USER`, `PK_SMTP_PASSWORD`, `PK_SMTP_FROM` | — | Mail account for alert emails (port 587 uses STARTTLS, 465 uses SSL) |

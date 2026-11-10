@@ -50,7 +50,11 @@ async function api(method, path, body) {
     USER = null;
     showLogin();
   }
-  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  if (!res.ok) {
+    const err = new Error(data.error || ('HTTP ' + res.status));
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -59,8 +63,73 @@ function setOnline(v) {
   const el = $('dbPill');
   if (!el) return;
   el.classList.toggle('offline', !v);
-  el.lastChild.textContent = v ? ' Online · Synced' : ' Offline · Read-only';
+  const waiting = outbox().length;
+  el.lastChild.textContent = (v ? ' Online' : ' Offline') +
+    (waiting ? ` · ${waiting} waiting to send` : v ? ' · Synced' : ' · Saving on this phone');
 }
+
+// ── Saving offline: saves wait on the phone and are sent when the connection is back ─
+const OUTBOX_KEY = 'pk_outbox_v1';
+const outboxAll = () => storeGet(OUTBOX_KEY) || [];
+const outbox = () => outboxAll().filter(o => USER && o.user === USER.username);
+
+function queueSave(rec) {
+  const others = outboxAll().filter(o => !(o.user === USER.username && o.rec.report_date === rec.report_date
+    && o.rec.station === rec.station));
+  others.push({ user: USER.username, rec, queued_at: new Date().toISOString(), error: '' });
+  storeSet(OUTBOX_KEY, others);
+  mergeOutbox();
+  setOnline(ONLINE);
+  loadRecs();
+  toast('📴 Saved on this phone — it will be sent when you are back online');
+}
+
+// Show waiting saves in the records (replacing the server copy of the same day)
+function mergeOutbox() {
+  outbox().forEach(o => {
+    RECS = RECS.filter(r => !(r.report_date === o.rec.report_date && r.station === o.rec.station));
+    RECS.unshift({ ...o.rec, pending: true, pending_error: o.error });
+  });
+}
+
+let flushing = false;
+async function flushOutbox() {
+  if (flushing || !ONLINE || !USER || !outbox().length) return;
+  flushing = true;
+  let sent = 0;
+  try {
+    for (const item of outbox()) {
+      try {
+        await api('POST', '/records', item.rec);
+        storeSet(OUTBOX_KEY, outboxAll().filter(o => !(o.user === item.user && o.queued_at === item.queued_at)));
+        sent++;
+      } catch (e) {
+        if (!ONLINE || e.status === 401) break;                     // try again later
+        storeSet(OUTBOX_KEY, outboxAll().map(o =>
+          o.user === item.user && o.queued_at === item.queued_at ? { ...o, error: e.message } : o));
+        toast(`⚠️ Couldn't send ${item.rec.report_date}: ${e.message}`, true);
+      }
+    }
+  } finally { flushing = false; }
+  if (sent) {
+    toast(`📤 Sent ${sent} day${sent === 1 ? '' : 's'} saved while offline`);
+    await refreshRecs();
+    refreshAlerts();
+  }
+  setOnline(ONLINE);
+}
+
+async function discardQueued(date, station) {
+  const ok = await showConfirmModal('Discard this unsent save?',
+    `The ${date} figures saved on this phone for ${station} will be thrown away.`);
+  if (!ok) return;
+  storeSet(OUTBOX_KEY, outboxAll().filter(o => !(o.user === USER.username && o.rec.report_date === date && o.rec.station === station)));
+  await refreshRecs();
+  setOnline(ONLINE);
+}
+
+// Retry waiting saves every minute and as soon as the phone reconnects
+setInterval(() => { if (USER && outbox().length) { if (!ONLINE) api('GET', '/me').catch(() => {}); flushOutbox(); } }, 60000);
 
 // Pull records from the server into RECS (falls back to the offline cache)
 async function syncFromServer() {
@@ -68,11 +137,13 @@ async function syncFromServer() {
     const data = await api('GET', '/records');
     RECS = Array.isArray(data.records) ? data.records : [];
     storeSet(CACHE_KEY, { user: USER && USER.username, records: RECS });
+    mergeOutbox();
     return true;
   } catch (e) {
     const cache = storeGet(CACHE_KEY);
     if (!ONLINE && cache && USER && cache.user === USER.username) {
       RECS = cache.records || [];
+      mergeOutbox();
       toast('📴 Offline — showing records from your last sync', true);
     } else if (ONLINE) {
       toast('⚠️ ' + e.message, true);
@@ -121,6 +192,13 @@ async function doLogin(evt) {
 }
 
 async function logout() {
+  const waiting = outbox().length;
+  if (waiting) {
+    const ok = await showConfirmModal('Some saves have not been sent',
+      `${waiting} day${waiting === 1 ? '' : 's'} saved on this phone ${waiting === 1 ? 'has' : 'have'} not reached the server yet. ` +
+      'They stay on this phone and are sent the next time you sign in here.\n\nSign out anyway?');
+    if (!ok) return;
+  }
   try { await api('POST', '/logout'); } catch (e) { /* already signed out */ }
   USER = null;
   RECS = [];
@@ -337,6 +415,7 @@ async function purgeFromBin(id, date) {
 async function startSession() {
   applyUserToUI();
   await syncFromServer();
+  flushOutbox();
   refreshAlerts();
   loadCustomers();
   loadRecs();
@@ -438,6 +517,7 @@ let GAS_ITEMS = [];  // today's itemised gases & lubricants sales (name, categor
 let DELIVERIES = []; // today's fuel deliveries (fuel, supplier, note, truck, ordered, received, dips)
 let ATTENDANTS = []; // today's cash per attendant (name, expected sales, cash, M-Pesa)
 let CUSTOMERS = [];  // credit accounts, for the invoice form
+let RECEIPTS = [];   // today's receipt photos (label, amount, upload_id)
 
 // ── Main computation — mirrors C++ engine exactly ────────────────────────────
 function compute() {
@@ -708,6 +788,67 @@ function setStatus(s) {
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
+// ── Receipt photos ────────────────────────────────────────────────────────────
+// Shrink a phone photo to at most 1600px on the long side as a JPEG before upload
+function shrinkPhoto(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/jpeg', 0.8));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('That file is not a photo')); };
+    img.src = url;
+  });
+}
+
+async function addReceipt() {
+  const file = $('rcFile').files[0];
+  if (!file) { toast('⚠️ Choose or take a photo first', true); return; }
+  if (!requireOnline('upload photos')) return;
+  const btn = $('rcBtn');
+  btn.disabled = true; btn.textContent = 'Uploading…';
+  try {
+    const data = await shrinkPhoto(file);
+    const up = await api('POST', '/uploads', { data, station: sv('fStation') });
+    RECEIPTS.push({ id: Date.now(), label: sv('rcLabel'), amount: fv('rcAmount'), upload_id: up.id });
+    $('rcFile').value = ''; $('rcAmount').value = '';
+    renderReceipts();
+    toast('📷 Photo added — click 💾 Save to keep it with this day');
+  } catch (e) {
+    toast('⚠️ ' + e.message, true);
+  } finally {
+    btn.disabled = false; btn.textContent = '📷 Add Photo';
+  }
+}
+
+function deleteReceipt(id) {
+  RECEIPTS = RECEIPTS.filter(r => r.id !== id);
+  renderReceipts();
+}
+
+const receiptTile = (r, canDelete) => {
+  const src = '/api/uploads/' + encodeURIComponent(r.upload_id);
+  return `<div class="receipt">
+    <a href="${src}" target="_blank" rel="noopener"><img src="${src}" alt="${esc(r.label)}" loading="lazy"></a>
+    <div class="cap"><span title="${esc(r.label)}">${esc(r.label)}${r.amount ? ' · KES ' + fmt(r.amount) : ''}</span>
+      ${canDelete ? `<button class="btn btn-r btn-xs" onclick="deleteReceipt(${Number(r.id)})">✕</button>` : ''}</div>
+  </div>`;
+};
+
+function renderReceipts() {
+  const list = $('receiptsList');
+  if (!list) return;
+  list.innerHTML = RECEIPTS.length ? RECEIPTS.map(r => receiptTile(r, true)).join('')
+    : '<div style="font-family:var(--mono);font-size:.74rem;color:var(--mut)">No photos for this day yet.</div>';
+}
+
 // ── Cash per attendant ────────────────────────────────────────────────────────
 function addAttendant() {
   const name = sv('atName');
@@ -1060,6 +1201,7 @@ function populateFormFromRecord(r) {
   INVOICES   = Array.isArray(r.invoices)   ? JSON.parse(JSON.stringify(r.invoices))   : [];
   DELIVERIES = Array.isArray(r.deliveries) ? JSON.parse(JSON.stringify(r.deliveries)) : [];
   ATTENDANTS = Array.isArray(r.attendants) ? JSON.parse(JSON.stringify(r.attendants)) : [];
+  RECEIPTS   = Array.isArray(r.receipts)   ? JSON.parse(JSON.stringify(r.receipts))   : [];
 
   // KRA fields
   setVal('kPin', r.kra_pin); setVal('kBiz', r.kra_business); setVal('kPeriod', r.kra_period);
@@ -1081,6 +1223,7 @@ function populateFormFromRecord(r) {
   renderInvoices();
   renderDeliveries();
   renderAttendants();
+  renderReceipts();
   calc();
 }
 
@@ -1092,6 +1235,8 @@ function clearFormForNewEntry() {
   renderDeliveries();
   ATTENDANTS = [];
   renderAttendants();
+  RECEIPTS = [];
+  renderReceipts();
   document.querySelectorAll('input[type="number"]').forEach(i => { if (!i.readOnly) i.value = ''; });
   ['kPin','kBiz','kPeriod','kEtr','fMpesaTill','fMpesaRef','fCreditCust','kRemarks']
     .forEach(id => $(id) && ($(id).value = ''));
@@ -1366,6 +1511,7 @@ async function saveRec() {
     invoices:        JSON.parse(JSON.stringify(INVOICES)), // snapshot of today's credit invoices
     deliveries:      JSON.parse(JSON.stringify(DELIVERIES)),
     attendants:      JSON.parse(JSON.stringify(ATTENDANTS)),
+    receipts:        JSON.parse(JSON.stringify(RECEIPTS)),
     kra_branch:      sv('kBranch'),
     float_amount:    fv('fFloat'),  banked_amount: fv('fBanked'),
     mpesa_till:      sv('fMpesaTill'), mpesa_ref: sv('fMpesaRef'),
@@ -1374,7 +1520,7 @@ async function saveRec() {
     created_at: new Date().toISOString()
   };
 
-  if (!requireOnline('save records')) return;
+  if (!ONLINE) { queueSave(rec); return; }
   // Server recomputes all figures and upserts on date + station
   try {
     const res = await api('POST', '/records', rec);
@@ -1383,6 +1529,7 @@ async function saveRec() {
     refreshAlerts();
     loadCustomers();
   } catch (e) {
+    if (!ONLINE) { queueSave(rec); return; }               // connection dropped while saving
     toast('⚠️ Save failed: ' + e.message, true);
   }
 }
@@ -1757,6 +1904,14 @@ function loadRecs() {
 
   try {
     tbody.innerHTML = display.map(r => {
+      if (r.pending) {
+        return `<tr><td style="color:var(--mut)">—</td><td>${esc(r.report_date)}</td>
+          <td style="color:var(--acc2)">${esc(r.station)}</td><td>${esc(r.operator || '—')}</td>
+          <td colspan="10" style="color:var(--mut)">${r.pending_error
+            ? '⚠️ Not accepted: ' + esc(r.pending_error) : 'Saved on this phone — will be sent when online'}</td>
+          <td><span class="badge bw">⏳ Waiting to send</span></td>
+          <td><button class="btn btn-r btn-xs" onclick="discardQueued('${esc(r.report_date)}', '${esc(r.station)}')">✕</button></td></tr>`;
+      }
       const idLabel   = r.uid ? r.uid.slice(-6) : String(r.id).slice(-6);
       const profit    = Number(r.net_profit  || 0);
       const vat       = Number(r.output_vat  || 0);
@@ -1846,6 +2001,9 @@ function openDetail(evt, id) {
     const label = FIELD_LABELS[m.field] || m.field;
     return `<div class="m-row"><span>${esc(label)}</span><span class="bad">entered ${fmt(m.entered)} · closing ${esc(m.from_date)} was ${fmt(m.expected)}</span></div>`;
   }).join('');
+  const rcs = r.receipts || [];
+  $('rdReceiptsSec').hidden = !rcs.length;
+  $('rdReceipts').innerHTML = rcs.map(x => receiptTile(x, false)).join('');
   const dels = r.deliveries || [];
   $('rdDeliveriesSec').hidden = !dels.length;
   $('rdDeliveries').innerHTML = dels.map(d => {
@@ -2191,6 +2349,8 @@ async function clearAll() {
   renderDeliveries();
   ATTENDANTS = [];
   renderAttendants();
+  RECEIPTS = [];
+  renderReceipts();
   if ($('fCredit')) { $('fCredit').readOnly = false; $('fCredit').value = ''; }
   if ($('eMisc')) { $('eMisc').value = ''; }
   renderInvoices();
@@ -2277,6 +2437,7 @@ async function init() {
   renderGasItems();
   renderDeliveries();
   renderAttendants();
+  renderReceipts();
   calc();
 
   // Who is signed in? Offline, fall back to the last signed-in user (read-only)
@@ -2305,7 +2466,12 @@ document.addEventListener('visibilitychange', () => {
   }
   refreshRecs();
 });
-window.addEventListener('online', () => { if (USER) refreshRecs(); });
+window.addEventListener('online', async () => {
+  if (!USER) return;
+  try { await api('GET', '/me'); } catch (e) { return; }
+  await flushOutbox();
+  refreshRecs();
+});
 window.addEventListener('offline', () => setOnline(false));
 
 init();

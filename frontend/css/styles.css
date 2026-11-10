@@ -349,3 +349,12 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
   body.print-modal .overlay.open .modal{max-height:none;width:100%;max-width:none;transform:none;
     box-shadow:none;border:none;color:#000;background:#fff}
 }
+
+/* ════ STAGE 4: RECEIPTS, OFFLINE QUEUE ════ */
+.receipt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:12px}
+.receipt{background:var(--s2);border:1px solid var(--brd);border-radius:8px;overflow:hidden;font-family:var(--mono);font-size:.7rem}
+.receipt img{display:block;width:100%;aspect-ratio:3/4;object-fit:cover;max-width:100%;background:var(--s3)}
+.receipt .cap{display:flex;align-items:center;gap:6px;padding:6px 8px}
+.receipt .cap span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+input[type=file]{color:var(--mut);font-family:var(--mono);font-size:.76rem;max-width:100%}
+.badge.bw{background:rgba(245,197,24,.1);color:var(--acc2);border:1px solid rgba(245,197,24,.3)}
