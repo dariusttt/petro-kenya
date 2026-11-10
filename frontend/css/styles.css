@@ -358,3 +358,9 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 .receipt .cap span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 input[type=file]{color:var(--mut);font-family:var(--mono);font-size:.76rem;max-width:100%}
 .badge.bw{background:rgba(245,197,24,.1);color:var(--acc2);border:1px solid rgba(245,197,24,.3)}
+
+/* ════ LANGUAGE ════ */
+.lang-switch{display:flex;justify-content:center;align-items:center;gap:6px;margin-top:12px;
+  font-family:var(--mono);font-size:.74rem;color:var(--mut)}
+.lang-switch button{background:none;border:none;color:var(--acc);font:inherit;cursor:pointer;padding:4px 2px;text-decoration:underline}
+html[lang="sw"] .lang-switch button[onclick*="'sw'"],html[lang="en"] .lang-switch button[onclick*="'en'"]{color:var(--txt);text-decoration:none;font-weight:600}

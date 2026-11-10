@@ -15,11 +15,13 @@ frontend/                 the app people open on their phone or computer
   index.html              page structure
   css/styles.css          look & phone layout
   js/app.js               calculations, forms, sign-in, talking to the server
+  js/i18n.js              Kiswahili translation
   manifest.webmanifest    makes it installable ("Add to Home Screen")
   sw.js                   service worker — opens offline, caches app files
   icons/                  app icons
 backend/
   server.py               web server + JSON API + SQLite + accounts (Python stdlib only)
+  business.py             credit accounts, alerts and email, monthly reports, photo uploads
   tests/test_server.py    API tests
 render.yaml, Procfile     hosting config (Render / Railway / Heroku-style hosts)
 ```
@@ -123,6 +125,15 @@ and the status pill shows how many are waiting). They are sent automatically whe
 connection returns or the app is opened again. If the server refuses one — for example
 the day was approved meanwhile — it stays listed with the reason and can be discarded.
 Photos, prices, alerts and credit accounts need a connection.
+
+**Kiswahili**
+
+Choose **English** or **Kiswahili** on the sign-in screen or under **👤 → Lugha / Language**;
+the choice is remembered on that phone. Menus, labels, buttons, messages and dates
+switch language; names and anything people type are never changed, and official KRA
+tax terms stay in English. The translations live in `frontend/js/i18n.js` — have a
+fluent speaker on your team read through them and adjust any wording to how your
+staff talk.
 
 **Alert emails** need a mail account on the server. With Gmail, turn on 2-step
 verification, create an *app password*, and set on the server:

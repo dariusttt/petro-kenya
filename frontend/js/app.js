@@ -363,7 +363,7 @@ async function loadHistory(id) {
     if (DETAIL_ID !== Number(id)) return;
     box.innerHTML = history.slice().reverse().map(h => `
       <div class="m-row">
-        <span class="hist-head">${esc(ACTION_LABELS[h.action] || h.action)} by ${esc(h.by)} · ${esc(new Date(h.at).toLocaleString('en-KE'))}</span>
+        <span class="hist-head">${esc(ACTION_LABELS[h.action] || h.action)} by ${esc(h.by)} · ${esc(new Date(h.at).toLocaleString(LOCALE))}</span>
         ${h.changes.map(ch => `<span class="hist-change">${esc(FIELD_LABELS[ch.field] || ch.field)}: <b>${esc(histValue(ch.before))}</b> → <b>${esc(histValue(ch.after))}</b></span>`).join('')}
       </div>`).join('') || '<div class="m-row"><span>No history yet.</span></div>';
   } catch (e) {
@@ -381,7 +381,7 @@ async function openBin() {
     list.innerHTML = records.map(r => `
       <div class="m-row" style="align-items:center;gap:10px;flex-wrap:wrap">
         <span>${esc(r.report_date)} · ${esc(r.station)}<br>
-          <small style="color:var(--mut)">KES ${fmt(r.gross_revenue)} · moved by ${esc(r.deleted_by || '—')} · ${esc(new Date(r.deleted_at).toLocaleString('en-KE'))}</small></span>
+          <small style="color:var(--mut)">KES ${fmt(r.gross_revenue)} · moved by ${esc(r.deleted_by || '—')} · ${esc(new Date(r.deleted_at).toLocaleString(LOCALE))}</small></span>
         <span style="display:flex;gap:6px">
           <button class="btn btn-b btn-xs" onclick="restoreFromBin(${Number(r.id)})">↩ Restore</button>
           <button class="btn btn-r btn-xs" onclick="purgeFromBin(${Number(r.id)}, '${esc(r.report_date)}')">Delete for good</button>
@@ -465,7 +465,7 @@ async function loadUsers() {
     const { users } = await api('GET', '/users');
     list.innerHTML = users.map(u => `
       <div class="m-row" style="align-items:center;gap:8px">
-        <span>${esc(displayName(u))} <small style="color:var(--mut)">· ${u.full_name ? esc(u.username) + ' · ' : ''}${esc(u.role)}${u.station ? ' · ' + esc(u.station) : ''}</small></span>
+        <span translate="no">${esc(displayName(u))} <small style="color:var(--mut)">· ${u.full_name ? esc(u.username) + ' · ' : ''}${esc(u.role)}${u.station ? ' · ' + esc(u.station) : ''}</small></span>
         <span style="display:flex;gap:6px">
           <button class="btn btn-o btn-xs" title="Reset password" onclick="resetUserPassword(${u.id}, '${esc(u.username)}')">🔑</button>
           ${u.id === USER.id ? '' : `<button class="btn btn-o btn-xs" title="Sign out on every device" onclick="signOutUser(${u.id}, '${esc(u.username)}')">⎋</button>`}
@@ -874,7 +874,7 @@ function renderAttendants() {
     const state = Math.abs(diff) < 1 ? '<b class="ok">Balanced</b>'
       : diff < 0 ? `<b class="bad">Short KES ${fmt(-diff)}</b>` : `<b>Over KES ${fmt(diff)}</b>`;
     return `<div class="item-row">
-      <span class="grow"><b>${esc(a.name)}</b><br><small>Sales KES ${fmt(a.expected)} · cash KES ${fmt(a.cash)} · M-Pesa KES ${fmt(a.mpesa)}</small></span>
+      <span class="grow"><b translate="no">${esc(a.name)}</b><br><small>${t("Sales")} KES ${fmt(a.expected)} · ${t("Cash")} KES ${fmt(a.cash)} · M-Pesa KES ${fmt(a.mpesa)}</small></span>
       <span>${state}</span>
       <button class="btn btn-r btn-xs" onclick="deleteAttendant(${Number(a.id)})">✕</button>
     </div>`;
@@ -893,7 +893,7 @@ async function loadCustomers() {
   try { CUSTOMERS = (await api('GET', '/customers')).customers; } catch (e) { return; }
   const sel = $('invAccount'), keep = sel.value;
   sel.innerHTML = '<option value="">— No account (one-off) —</option>' + CUSTOMERS.map(c =>
-    `<option value="${Number(c.id)}">${esc(c.name)}${c.company ? ' · ' + esc(c.company) : ''}</option>`).join('');
+    `<option value="${Number(c.id)}" translate="no">${esc(c.name)}${c.company ? ' · ' + esc(c.company) : ''}</option>`).join('');
   sel.value = keep;
 }
 
@@ -910,7 +910,7 @@ async function renderCreditPage() {
   $('creditTotals').textContent = `${CUSTOMERS.length} account${CUSTOMERS.length === 1 ? '' : 's'} · KES ${fmt(owed)} owed`;
   $('customersBody').innerHTML = CUSTOMERS.length ? CUSTOMERS.map(c => `
     <tr style="cursor:pointer" onclick="openStatement(${Number(c.id)})">
-      <td>${esc(c.name)}</td><td>${esc(c.company || '—')}</td><td>${esc(c.phone || '—')}</td>
+      <td translate="no">${esc(c.name)}</td><td translate="no">${esc(c.company || '—')}</td><td translate="no">${esc(c.phone || '—')}</td>
       <td class="num ${c.over_limit ? 'bad' : ''}">KES ${fmt(c.balance)}</td>
       <td class="num">${c.credit_limit ? 'KES ' + fmt(c.credit_limit) : '—'}</td>
       <td>${c.over_limit ? '<span class="badge br">Over limit</span>' : ''}</td>
@@ -948,8 +948,8 @@ async function openStatement(id) {
       <td>${esc(e.date)}</td>
       <td class="num ${e.amount < 0 ? 'ok' : ''}">${e.amount < 0 ? '− ' : ''}KES ${fmt(Math.abs(e.amount))}</td>
       <td class="num">KES ${fmt(e.balance)}</td>
-      <td>${e.type === 'invoice' ? '🧾 ' : '💵 '}${esc(e.detail || (e.type === 'invoice' ? 'Invoice' : 'Payment'))}</td>
-      <td>${esc(e.station || '—')}</td>
+      <td translate="no">${e.type === 'invoice' ? '🧾 ' : '💵 '}${esc(e.detail || (e.type === 'invoice' ? 'Invoice' : 'Payment'))}</td>
+      <td translate="no">${esc(e.station || '—')}</td>
       <td>${e.type === 'payment' && isAdmin ? `<button class="btn btn-r btn-xs" title="Void this payment" onclick="voidPayment(${Number(e.payment_id)})">✕</button>` : ''}</td>
     </tr>`).join('') : '<tr><td colspan="6" style="color:var(--mut)">No invoices or payments yet.</td></tr>';
   } catch (e) {
@@ -1017,7 +1017,7 @@ function renderAlerts() {
   $('alertsList').innerHTML = ALERTS.length ? ALERTS.map(a => `
     <div class="alert-item ${a.read ? '' : 'unread'}" style="cursor:pointer" onclick="openAlertRecord(${Number(a.record_id)})">
       <div><div class="alert-title">${esc(a.title)}</div>${esc(a.message)}
-        <div class="alert-meta">${esc(new Date(a.created_at).toLocaleString('en-KE'))}${a.emailed ? ' · emailed' : ''}</div></div>
+        <div class="alert-meta">${esc(new Date(a.created_at).toLocaleString(LOCALE))}${a.emailed ? ' · emailed' : ''}</div></div>
     </div>`).join('') : '<div class="m-row"><span>No open alerts. 👍</span></div>';
 }
 
@@ -1100,10 +1100,10 @@ async function renderReport() {
   };
   $('repHead').innerHTML = '<tr><th>Branch</th>' + REPORT_COLUMNS.map(k => `<th>${esc(labels[k] || k)}</th>`).join('') + '</tr>';
   $('repBody').innerHTML = rep.branches.length
-    ? rep.branches.map(b => '<tr><td>' + esc(b.station) + '</td>' + REPORT_COLUMNS.map(k => `<td class="num">${cell(b, k)}</td>`).join('') + '</tr>').join('')
+    ? rep.branches.map(b => '<tr><td translate="no">' + esc(b.station) + '</td>' + REPORT_COLUMNS.map(k => `<td class="num">${cell(b, k)}</td>`).join('') + '</tr>').join('')
       + (rep.branches.length > 1 ? '<tr class="total"><td>All branches</td>' + REPORT_COLUMNS.map(k => `<td class="num">${cell(t, k)}</td>`).join('') + '</tr>' : '')
     : `<tr><td colspan="${REPORT_COLUMNS.length + 1}" style="color:var(--mut)">No records saved for this month.</td></tr>`;
-  $('repDaily').innerHTML = rep.daily.map(d => `<tr><td>${esc(d.date)}</td><td>${esc(d.station)}</td>
+  $('repDaily').innerHTML = rep.daily.map(d => `<tr><td>${esc(d.date)}</td><td translate="no">${esc(d.station)}</td>
     <td class="num">${fmt(d.total_litres)}</td><td class="num">KES ${fmt(d.gross_revenue)}</td>
     <td class="num ${d.net_profit < 0 ? 'bad' : ''}">KES ${fmt(d.net_profit)}</td>
     <td>${d.approved ? '<span class="badge bg">✅ Approved</span>' : '<span class="badge by">Open</span>'}</td></tr>`).join('')
@@ -1142,7 +1142,7 @@ function showPage(name) {
 
 function updatePageContext() {
   const d = sv('fDate');
-  const when = d ? new Date(d + 'T00:00:00').toLocaleDateString('en-KE',
+  const when = d ? new Date(d + 'T00:00:00').toLocaleDateString(LOCALE,
     { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) : '';
   $('pageCtx').textContent = [sv('fStation'), when].filter(Boolean).join(' · ');
 }
@@ -1293,7 +1293,7 @@ function previousRecord() {
     .sort((a, b) => b.report_date.localeCompare(a.report_date))[0] || null;
 }
 
-const niceDate = d => new Date(d + 'T00:00:00').toLocaleDateString('en-KE', { weekday: 'short', day: 'numeric', month: 'short' });
+const niceDate = d => new Date(d + 'T00:00:00').toLocaleDateString(LOCALE, { weekday: 'short', day: 'numeric', month: 'short' });
 
 function fillOpeningsFromPrevious() {
   const prev = previousRecord();
@@ -1375,7 +1375,7 @@ async function renderPricesPage() {
   if (!isAdmin) return;
   try {
     const { prices } = await api('GET', '/prices/history');
-    $('priceHistory').innerHTML = prices.map(p => `<tr><td>${esc(p.effective_from)}</td><td>${esc(p.station)}</td>
+    $('priceHistory').innerHTML = prices.map(p => `<tr><td>${esc(p.effective_from)}</td><td translate="no">${esc(p.station)}</td>
       <td>${esc(FUEL_NAMES[p.fuel] || p.fuel)}</td><td>KES ${fmt(p.sell)}</td><td>KES ${fmt(p.cost)}</td><td>${esc(p.set_by)}</td></tr>`).join('')
       || '<tr><td colspan="6" style="color:var(--mut)">No prices set yet.</td></tr>';
   } catch (e) { /* history is optional */ }
@@ -1436,7 +1436,7 @@ function renderDeliveries() {
     const { short, dipGain, dipDiff } = deliveryChecks(d);
     return `<div class="item-row">
       <span class="grow"><b>${esc(FUEL_NAMES[d.fuel] || d.fuel)}</b> · ${fmt(d.litres_received)} L received
-        <br><small>${esc(d.supplier || 'Supplier —')} · ${esc(d.note_no || 'no note')} · ${esc(d.truck_reg || 'no truck')}</small></span>
+        <br><small translate="no">${esc(d.supplier || 'Supplier —')} · ${esc(d.note_no || 'no note')} · ${esc(d.truck_reg || 'no truck')}</small></span>
       <span>${d.litres_ordered ? `Ordered ${fmt(d.litres_ordered)} L · <b class="${short > 0.5 ? 'bad' : 'ok'}">${short > 0.5 ? 'Short ' + fmt(short) + ' L' : 'Full'}</b>` : ''}
         ${dipGain !== null ? `<br><small>Tank rose ${fmt(dipGain)} L (${Math.abs(dipDiff) < 20 ? 'matches' : '<b class="bad">' + (dipDiff < 0 ? 'short ' : 'over ') + fmt(Math.abs(dipDiff)) + ' L</b>'})</small>` : ''}</span>
       <button class="btn btn-r btn-xs" onclick="deleteDelivery(${Number(d.id)})">✕</button>
@@ -1644,10 +1644,10 @@ function renderInvoices() {
     tbody.innerHTML = INVOICES.map((inv, i) => `
       <tr>
         <td style="color:var(--mut)">${i+1}</td>
-        <td>${esc(inv.customer)}</td>
-        <td style="color:var(--acc2)">${esc(inv.company || '—')}</td>
-        <td style="color:var(--blue)">${esc(inv.carReg || '—')}</td>
-        <td>${esc(inv.phone || '—')}</td>
+        <td translate="no">${esc(inv.customer)}</td>
+        <td translate="no" style="color:var(--acc2)">${esc(inv.company || '—')}</td>
+        <td translate="no" style="color:var(--blue)">${esc(inv.carReg || '—')}</td>
+        <td translate="no">${esc(inv.phone || '—')}</td>
         <td>${esc(inv.fuelType)}</td>
         <td style="color:var(--purple)">KES ${fmt(inv.amount)}</td>
         <td><button class="btn btn-o" style="padding:3px 9px;font-size:.65rem" onclick="printInvoice(${Number(inv.id)})">🖨️</button></td>
@@ -1723,7 +1723,7 @@ function renderMiscItems() {
     list.innerHTML = MISC_ITEMS.map(item => `
       <div style="display:flex;align-items:center;gap:10px;background:var(--s2);
         border:1px solid var(--brd);border-radius:7px;padding:8px 12px;font-family:var(--mono);font-size:.78rem">
-        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--txt)" title="${esc(item.name)}">${esc(item.name)}</span>
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--txt)" translate="no" title="${esc(item.name)}">${esc(item.name)}</span>
         <span style="flex-shrink:0;color:var(--acc2);font-weight:600">KES ${fmt(item.amount)}</span>
         <button class="btn btn-r" style="flex-shrink:0;padding:2px 8px;font-size:.62rem"
           onclick="deleteMiscItem(${Number(item.id)})">✕</button>
@@ -1805,7 +1805,7 @@ function renderGasItems() {
       return `
       <div style="display:flex;align-items:center;gap:10px;background:var(--s2);
         border:1px solid var(--brd);border-radius:7px;padding:8px 12px;font-family:var(--mono);font-size:.78rem">
-        <span style="flex:2;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--txt)" title="${esc(item.name)}">${esc(item.name)}</span>
+        <span style="flex:2;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--txt)" translate="no" title="${esc(item.name)}">${esc(item.name)}</span>
         <span style="flex-shrink:0;color:${catColor};font-size:.68rem;border:1px solid ${catColor};
           border-radius:4px;padding:1px 7px;text-align:center">${esc(item.category)}</span>
         <span style="flex-shrink:0;color:var(--mut);white-space:nowrap">${esc(item.qty)} × KES ${fmt(item.price)}</span>
@@ -1906,7 +1906,7 @@ function loadRecs() {
     tbody.innerHTML = display.map(r => {
       if (r.pending) {
         return `<tr><td style="color:var(--mut)">—</td><td>${esc(r.report_date)}</td>
-          <td style="color:var(--acc2)">${esc(r.station)}</td><td>${esc(r.operator || '—')}</td>
+          <td translate="no" style="color:var(--acc2)">${esc(r.station)}</td><td translate="no">${esc(r.operator || '—')}</td>
           <td colspan="10" style="color:var(--mut)">${r.pending_error
             ? '⚠️ Not accepted: ' + esc(r.pending_error) : 'Saved on this phone — will be sent when online'}</td>
           <td><span class="badge bw">⏳ Waiting to send</span></td>
@@ -1928,8 +1928,8 @@ function loadRecs() {
       return `<tr data-id="${safeId}" onclick="openDetail(event, ${safeId})" style="cursor:pointer">
         <td style="color:var(--mut)">${idLabel}</td>
         <td>${esc(r.report_date || '—')}</td>
-        <td style="color:var(--acc2);max-width:120px;overflow:hidden;text-overflow:ellipsis">${esc(r.station || '—')}</td>
-        <td>${esc(r.operator || '—')}</td>
+        <td style="color:var(--acc2);max-width:120px;overflow:hidden;text-overflow:ellipsis" translate="no">${esc(r.station || '—')}</td>
+        <td translate="no">${esc(r.operator || '—')}</td>
         <td>${fmtL(pLit)}</td>
         <td>${fmtL(dLit)}</td>
         <td style="color:var(--blue)">${fmtL(totLit)}</td>
@@ -1991,7 +1991,7 @@ function openDetail(evt, id) {
   const lockedForMe = !!r.approved_at || (!!lockReason(r.report_date, r) && !(USER && USER.role === 'admin'));
   $('rdDeleteBtn').disabled = lockedForMe;
   $('rdApproval').textContent = r.approved_at
-    ? '✅ Approved by ' + r.approved_by + ' · ' + new Date(r.approved_at).toLocaleString('en-KE')
+    ? '✅ Approved by ' + r.approved_by + ' · ' + new Date(r.approved_at).toLocaleString(LOCALE)
     : 'Open — not yet approved';
   $('rdApproveBtn').hidden = !(!r.approved_at && canApprove());
   $('rdReopenBtn').hidden = !(r.approved_at && USER && USER.role === 'admin');
@@ -2008,7 +2008,7 @@ function openDetail(evt, id) {
   $('rdDeliveriesSec').hidden = !dels.length;
   $('rdDeliveries').innerHTML = dels.map(d => {
     const { short } = deliveryChecks(d);
-    return `<div class="m-row"><span>${esc(FUEL_NAMES[d.fuel] || d.fuel)} · ${esc(d.supplier || '—')} · ${esc(d.note_no || '—')} · ${esc(d.truck_reg || '—')}</span>
+    return `<div class="m-row"><span translate="no">${esc(FUEL_NAMES[d.fuel] || d.fuel)} · ${esc(d.supplier || '—')} · ${esc(d.note_no || '—')} · ${esc(d.truck_reg || '—')}</span>
       <span>${fmt(d.litres_received)} L${short > 0.5 ? ' <span class="bad">(short ' + fmt(short) + ' L)</span>' : ''}</span></div>`;
   }).join('');
 
@@ -2017,9 +2017,9 @@ function openDetail(evt, id) {
   // Header
   $('rdStation').textContent = r.station || 'Unknown Station';
   $('rdDate').textContent = r.report_date
-    ? new Date(r.report_date + 'T00:00:00').toLocaleDateString('en-KE',
+    ? new Date(r.report_date + 'T00:00:00').toLocaleDateString(LOCALE,
         { weekday:'long', day:'numeric', month:'long', year:'numeric' })
-    : (r.created_at ? new Date(r.created_at).toLocaleDateString('en-KE') : '—');
+    : (r.created_at ? new Date(r.created_at).toLocaleDateString(LOCALE) : '—');
   if (r.operator) $('rdDate').textContent += '  ·  Operator: ' + r.operator;
   if (r.last_edited_by && r.last_edited_by !== r.operator) $('rdDate').textContent += '  ·  Last changed by: ' + r.last_edited_by;
 
@@ -2078,7 +2078,7 @@ function openDetail(evt, id) {
   if (r.gas_items && r.gas_items.length) {
     gasSec.style.display = 'block';
     gasList.innerHTML = r.gas_items.map(i =>
-      `<div class="m-row"><span>${esc(i.name)} (${esc(i.category)}) — ${esc(i.qty)} × KES ${fmt(i.price)}</span><span>KES ${fmt(i.qty * i.price)}</span></div>`
+      `<div class="m-row"><span translate="no">${esc(i.name)} (${esc(i.category)}) — ${esc(i.qty)} × KES ${fmt(i.price)}</span><span>KES ${fmt(i.qty * i.price)}</span></div>`
     ).join('') + `<div class="m-row" style="border-top:1px solid var(--brd);margin-top:4px;padding-top:6px">
       <span><b>Gas/Lube Revenue</b></span><span>KES ${fmt(r.gas_lube_revenue || 0)}</span></div>`;
   } else {
@@ -2098,7 +2098,7 @@ function openDetail(evt, id) {
   if (r.invoices && r.invoices.length) {
     invSec.style.display = 'block';
     invList.innerHTML = r.invoices.map(inv =>
-      `<div class="m-row"><span>${esc(inv.customer || '—')}${esc(inv.company ? ' · ' + inv.company : '')}${esc(inv.carReg ? ' · ' + inv.carReg : '')}</span><span>KES ${fmt(inv.amount || 0)}</span></div>`
+      `<div class="m-row"><span translate="no">${esc(inv.customer || '—')}${esc(inv.company ? ' · ' + inv.company : '')}${esc(inv.carReg ? ' · ' + inv.carReg : '')}</span><span>KES ${fmt(inv.amount || 0)}</span></div>`
     ).join('');
   } else {
     invSec.style.display = 'none';
@@ -2115,7 +2115,7 @@ function openDetail(evt, id) {
   const miscList = $('rdMiscItems');
   if (r.misc_items && r.misc_items.length) {
     miscList.innerHTML = r.misc_items.map(i =>
-      `<div class="m-row" style="padding-left:12px;font-size:.72rem;color:var(--mut)"><span>↳ ${esc(i.name)}</span><span>KES ${fmt(i.amount)}</span></div>`
+      `<div class="m-row" style="padding-left:12px;font-size:.72rem;color:var(--mut)"><span translate="no">↳ ${esc(i.name)}</span><span>KES ${fmt(i.amount)}</span></div>`
     ).join('');
   } else {
     miscList.innerHTML = '';
@@ -2277,7 +2277,7 @@ function openKra() {
   $('mPeriod').textContent = sv('kPeriod')||'—';
   $('mRType').textContent  = sv('kReturnType')||'—';
   $('mEtr').textContent    = sv('kEtr')||'—';
-  $('mDate').textContent   = sv('fDate')||new Date().toLocaleDateString('en-KE');
+  $('mDate').textContent   = sv('fDate')||new Date().toLocaleDateString(LOCALE);
   $('mPL').textContent     = fmtL(c.pL)+' L';
   $('mDL').textContent     = fmtL(c.dL)+' L';
   $('mKL').textContent     = fmtL(c.kL)+' L';
@@ -2387,7 +2387,7 @@ function applyTodayDate() {
   const dateEl = $('fDate');
   if (dateEl) { dateEl.value = todayLocal(); dateEl.max = todayLocal(); }
   const now = new Date();
-  $('hDate').textContent = now.toLocaleDateString('en-KE',
+  $('hDate').textContent = now.toLocaleDateString(LOCALE,
     { weekday:'short', day:'numeric', month:'short', year:'numeric' });
 }
 

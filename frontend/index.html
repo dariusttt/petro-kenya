@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PetroKenya">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/styles.css?v=9">
+<link rel="stylesheet" href="css/styles.css?v=10">
 </head>
 <body>
 
@@ -513,7 +513,7 @@
       </div>
     </div>
 
-    <div class="kra-note" style="margin-top:14px">
+    <div class="kra-note" id="varianceNote" style="margin-top:14px">
       ⚠️ <b>HOW TO READ VARIANCE:</b> &nbsp; A <b>negative</b> variance means the tank has
       <b>less fuel than expected</b> (possible leak, theft, or meter under-reading — investigate).
       A <b>positive</b> variance means <b>more fuel than expected</b> (possible meter over-reading
@@ -934,7 +934,7 @@
 <!-- ══ RECORD DETAIL MODAL ══ -->
 <div class="overlay" id="detailOverlay">
   <div class="modal" style="max-width:640px">
-    <div class="m-title">📄 Daily Record — <span id="rdStation">—</span></div>
+    <div class="m-title">📄 Daily Record — <span id="rdStation" translate="no">—</span></div>
     <div class="m-sub" id="rdDate">—</div>
 
     <div class="m-sec">
@@ -1086,6 +1086,8 @@
     <div id="loginError" class="login-error"></div>
     <button class="btn btn-g" id="loginBtn" type="submit" style="width:100%">Sign in</button>
     <div class="m-sub" style="margin:14px 0 0;text-align:center">Ask your administrator for an account.</div>
+    <div class="lang-switch">🌐 <button type="button" onclick="setLanguage('en')">English</button> ·
+      <button type="button" onclick="setLanguage('sw')">Kiswahili</button></div>
   </form>
 </div>
 
@@ -1094,6 +1096,12 @@
   <div class="modal">
     <div class="m-title">👤 <span id="acctName">—</span></div>
     <div class="m-sub" id="acctRole">—</div>
+
+    <div class="m-sec">
+      <div class="m-sec-ttl">Lugha / Language</div>
+      <div class="lang-switch" style="justify-content:flex-start">🌐 <button type="button" onclick="setLanguage('en')">English</button> ·
+        <button type="button" onclick="setLanguage('sw')">Kiswahili</button></div>
+    </div>
 
     <div class="m-sec">
       <div class="m-sec-ttl">Your Name</div>
@@ -1244,6 +1252,7 @@
 
 <div id="toast"></div>
 
-<script src="js/app.js?v=9"></script>
+<script src="js/i18n.js?v=10"></script>
+<script src="js/app.js?v=10"></script>
 </body>
 </html>
