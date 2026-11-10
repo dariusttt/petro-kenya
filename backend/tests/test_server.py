@@ -17,6 +17,10 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import server  # noqa: E402
 
+# Freeze "today" so the fixed dates below stay inside the staff edit window
+TODAY = "2026-10-15"
+server.today = lambda: TODAY
+
 SAMPLE = {
     "report_date": "2026-10-14",
     "station": "Westlands Branch",
@@ -55,12 +59,15 @@ class Client:
         return self
 
 
-class ServerTest(unittest.TestCase):
+class ServerCase(unittest.TestCase):
+    """Starts one test server per test class; each test begins with an empty database."""
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.httpd = server.make_server("127.0.0.1", 0, os.path.join(cls.tmp.name, "t.sqlite3"),
                                        bootstrap=False)
+        cls.httpd.RequestHandlerClass.log_message = lambda *args: None
         cls.port = cls.httpd.server_address[1]
         cls.base = "http://127.0.0.1:%d" % cls.port
         auth = cls.httpd.RequestHandlerClass.auth
@@ -78,8 +85,12 @@ class ServerTest(unittest.TestCase):
 
     def setUp(self):
         self.httpd.RequestHandlerClass.auth.fails.clear()
+        self.httpd.RequestHandlerClass.auth.account_fails.clear()
+        conn = self.httpd.RequestHandlerClass.store.conn
+        for table in ("records", "record_versions"):
+            conn.execute("DELETE FROM %s" % table)
+        conn.commit()
         self.admin = Client(self.base).login("boss")
-        self.admin.req("DELETE", "/api/records")
 
     def raw_get(self, path):
         conn = http.client.HTTPConnection("127.0.0.1", self.port)
@@ -89,6 +100,8 @@ class ServerTest(unittest.TestCase):
         conn.close()
         return resp.status
 
+
+class ServerTest(ServerCase):
     # ── App files ──
     def test_serves_frontend_files(self):
         anon = Client(self.base)
@@ -296,6 +309,111 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.admin.req("DELETE", "/api/users/%d" % uid)[0], 200)
         me = self.admin.req("GET", "/api/me")[1]["user"]["id"]
         self.assertEqual(self.admin.req("DELETE", "/api/users/%d" % me)[0], 400)
+
+
+class SecurityTest(ServerCase):
+    """Login limits, sessions, passwords, change history, the bin and edit locks."""
+
+    def test_faked_forwarded_address_does_not_dodge_the_login_limit(self):
+        def attempt(fake_ip):
+            conn = http.client.HTTPConnection("127.0.0.1", self.port)
+            conn.request("POST", "/api/login", json.dumps({"username": "boss", "password": "nope"}),
+                         {"Content-Type": "application/json", "X-Forwarded-For": fake_ip})
+            return conn.getresponse().status
+        codes = [attempt("10.0.0.%d" % i) for i in range(server.LOGIN_MAX_FAILS + 2)]
+        self.assertEqual(codes[-1], 429)
+
+    def test_account_pauses_after_wrong_passwords_from_many_devices(self):
+        auth = self.httpd.RequestHandlerClass.auth
+        for i in range(server.ACCOUNT_MAX_FAILS):
+            with self.assertRaises(server.ApiError):
+                auth.login("roamer", "wrong-guess", "10.1.0.%d" % i)
+        with self.assertRaises(server.ApiError) as err:
+            auth.login("roamer", PASSWORD, "10.2.0.1")       # right password, new device
+        self.assertEqual(err.exception.status, 429)
+
+    def test_idle_and_expired_sessions_end(self):
+        c = Client(self.base).login("roamer")
+        conn = self.httpd.RequestHandlerClass.store.conn
+        conn.execute("UPDATE sessions SET last_seen = ?", (server.time.time() - server.IDLE_HOURS * 3600 - 5,))
+        conn.commit()
+        self.assertEqual(c.req("GET", "/api/me")[0], 401)
+        c = Client(self.base).login("roamer")
+        conn.execute("UPDATE sessions SET expires_at = ?", (server.time.time() - 1,))
+        conn.commit()
+        self.assertEqual(c.req("GET", "/api/me")[0], 401)
+
+    def test_sign_out_everywhere(self):
+        phone, laptop = Client(self.base).login("roamer"), Client(self.base).login("roamer")
+        self.assertEqual(phone.req("POST", "/api/me/logout-all", {})[1]["signed_out"], 1)
+        self.assertEqual(phone.req("GET", "/api/me")[0], 200)     # this device stays signed in
+        self.assertEqual(laptop.req("GET", "/api/me")[0], 401)
+        uid = phone.req("GET", "/api/me")[1]["user"]["id"]
+        self.assertEqual(self.admin.req("POST", "/api/users/%d/logout" % uid, {})[0], 200)
+        self.assertEqual(phone.req("GET", "/api/me")[0], 401)
+        self.assertEqual(self.admin.req("POST", "/api/users/99999/logout", {})[0], 404)
+
+    def test_weak_passwords_are_refused(self):
+        for pw in ("password123", "12345678", "aaaaaaaa", "Safaricom", "xx-weakuser-1"):
+            status, body, _ = self.admin.req("POST", "/api/users",
+                                             {"username": "weakuser", "password": pw})
+            self.assertEqual(status, 400, pw)
+        self.assertEqual(self.admin.req("POST", "/api/users",
+                                        {"username": "stronguser", "password": "Mango-Tree-42"})[0], 201)
+
+    def test_hsts_only_over_https(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        conn.request("GET", "/api/health", headers={"X-Forwarded-Proto": "https"})
+        self.assertIn("max-age", conn.getresponse().getheader("Strict-Transport-Security") or "")
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        conn.request("GET", "/api/health")
+        self.assertIsNone(conn.getresponse().getheader("Strict-Transport-Security"))
+
+    def test_every_change_is_kept_in_history(self):
+        rid = self.admin.req("POST", "/api/records", SAMPLE)[1]["record"]["id"]
+        self.admin.req("POST", "/api/records", {**SAMPLE, "cash_amount": 5000})
+        hist = self.admin.req("GET", "/api/records/%d/history" % rid)[1]["history"]
+        self.assertEqual([h["action"] for h in hist], ["create", "update"])
+        self.assertEqual(hist[1]["by"], "boss")
+        self.assertEqual(hist[1]["changes"], [{"field": "cash_amount", "before": 7550, "after": 5000}])
+
+    def test_delete_moves_to_bin_and_admin_can_restore_or_purge(self):
+        rid = self.admin.req("POST", "/api/records", SAMPLE)[1]["record"]["id"]
+        roamer = Client(self.base).login("roamer")
+        self.assertEqual(roamer.req("DELETE", "/api/records/%d" % rid)[0], 200)
+        self.assertEqual(self.admin.req("GET", "/api/records")[1]["count"], 0)
+        self.assertEqual(roamer.req("GET", "/api/bin")[0], 403)
+        binned = self.admin.req("GET", "/api/bin")[1]["records"]
+        self.assertEqual([(r["id"], r["deleted_by"]) for r in binned], [(rid, "roamer")])
+
+        self.assertEqual(self.admin.req("POST", "/api/bin/%d/restore" % rid, {})[0], 200)
+        self.assertEqual(self.admin.req("GET", "/api/records")[1]["count"], 1)
+
+        self.admin.req("DELETE", "/api/records/%d" % rid)
+        self.assertEqual(self.admin.req("DELETE", "/api/bin/%d" % rid)[0], 200)
+        self.assertEqual(self.admin.req("GET", "/api/bin")[1]["count"], 0)
+        hist = self.admin.req("GET", "/api/records/%d/history" % rid)
+        self.assertEqual(hist[0], 404)          # record is gone, but the versions table keeps it
+        actions = [r["action"] for r in self.httpd.RequestHandlerClass.store.conn.execute(
+            "SELECT action FROM record_versions WHERE record_id = ? ORDER BY id", (rid,))]
+        self.assertEqual(actions, ["create", "delete", "restore", "delete", "purge"])
+
+    def test_saving_a_binned_day_brings_it_back(self):
+        rid = self.admin.req("POST", "/api/records", SAMPLE)[1]["record"]["id"]
+        self.admin.req("DELETE", "/api/records/%d" % rid)
+        status, res, _ = self.admin.req("POST", "/api/records", SAMPLE)
+        self.assertEqual((status, res["record"]["id"]), (201, rid))
+        self.assertEqual(self.admin.req("GET", "/api/bin")[1]["count"], 0)
+
+    def test_staff_can_only_change_today_and_yesterday(self):
+        old = {**SAMPLE, "station": "Kisumu Branch", "report_date": "2026-10-13"}
+        staff = Client(self.base).login("kisumu")
+        self.assertEqual(staff.req("POST", "/api/records", old)[0], 403)
+        rid = self.admin.req("POST", "/api/records", old)[1]["record"]["id"]   # admins can
+        self.assertEqual(staff.req("PUT", "/api/records/%d" % rid, {**old, "report_date": TODAY})[0], 403)
+        self.assertEqual(staff.req("DELETE", "/api/records/%d" % rid)[0], 403)
+        self.assertEqual(staff.req("POST", "/api/records", {**old, "report_date": "2026-10-14"})[0], 201)
+        self.assertEqual(self.admin.req("POST", "/api/records", {**SAMPLE, "report_date": "2026-10-16"})[0], 400)
 
 
 class BootstrapTest(unittest.TestCase):

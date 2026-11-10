@@ -15,19 +15,26 @@ Environment
     PK_DB                 SQLite file (default backend/petrokenya.sqlite3)
     PK_ADMIN_USER/PK_ADMIN_PASSWORD   create this admin on first start if no users exist
     PK_SECURE_COOKIE=1    force the Secure cookie flag (auto-on behind HTTPS proxies)
+    PK_TRUST_PROXY=1      read the visitor's address from X-Forwarded-For; set ONLY behind
+                          a proxy you control (e.g. Render), never when serving directly
 
 API (all JSON; everything except /api/health and /api/login needs a signed-in session)
     POST   /api/login  /api/logout       GET /api/me     POST /api/me/password
     GET    /api/stations                 POST /api/compute
     GET    /api/records?station=&date=&from=&to=&limit=
     POST   /api/records                  (upserts on report_date + station)
-    GET|PUT|DELETE /api/records/<id>     DELETE /api/records?station=   (admin)
+    GET|PUT|DELETE /api/records/<id>     DELETE /api/records?station=   (admin; moves to bin)
+    GET    /api/records/<id>/history     every saved version and what changed
+    GET    /api/bin   POST /api/bin/<id>/restore   DELETE /api/bin/<id>   (admin)
+    POST   /api/me/logout-all            POST /api/users/<id>/logout   (admin)
     GET    /api/analytics?station=       GET /api/export.csv?station=
     GET|POST /api/users   DELETE /api/users/<id>   POST /api/users/<id>/password   (admin)
 
 Roles: "admin" manages users and all branches. "staff" with a station can only
 see and edit that branch; staff without a station can use every branch but
-cannot bulk-delete or manage users.
+cannot bulk-delete or manage users. Staff may only change today's and
+yesterday's records. Deleting moves a record to the bin, and every change is
+kept in the record's history.
 """
 
 import csv
@@ -44,7 +51,7 @@ import sqlite3
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
@@ -55,10 +62,17 @@ DB_PATH = os.environ.get("PK_DB", os.path.join(BACKEND_DIR, "petrokenya.sqlite3"
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8000"))
 MAX_BODY = 2 * 1024 * 1024
-SESSION_DAYS = 30
+SESSION_DAYS = 7                 # a sign-in lasts at most this long
+IDLE_HOURS = 8                   # ...and ends early after this long without use
 COOKIE = "pk_session"
 PBKDF2_ROUNDS = 240_000
-LOGIN_MAX_FAILS, LOGIN_WINDOW = 5, 15 * 60
+LOGIN_MAX_FAILS, LOGIN_WINDOW = 5, 15 * 60   # wrong passwords per device before a pause
+ACCOUNT_MAX_FAILS = 10                       # wrong passwords per account, from any device
+STAFF_EDIT_DAYS = 1              # staff may change today's and yesterday's records only
+# Only behind a proxy we control (Render etc.) may X-Forwarded-For name the client;
+# otherwise anyone could fake it to dodge the login limits
+TRUST_PROXY = os.environ.get("PK_TRUST_PROXY") == "1"
+KENYA_TZ = timezone(timedelta(hours=3))
 
 STATIONS = [
     "Westlands Branch", "Himaki Branch", "Ngeria Branch", "Nairobi West Branch",
@@ -108,6 +122,10 @@ CSV_COLS = [
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+# Fields compared between versions in a record's change history
+HISTORY_FIELDS = ["report_date", "station"] + NUM_FIELDS + [
+    f for f in TEXT_FIELDS if f != "operator"] + LIST_FIELDS
+
 
 class ApiError(Exception):
     def __init__(self, status, message):
@@ -130,6 +148,15 @@ def num(v):
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def today():
+    """Today's date in Kenya, as YYYY-MM-DD (tests replace this)."""
+    return datetime.now(KENYA_TZ).strftime("%Y-%m-%d")
+
+
+def days_before(date_str, days):
+    return (datetime.strptime(date_str, "%Y-%m-%d") - timedelta(days=days)).strftime("%Y-%m-%d")
 
 
 # ── Computation engine — mirrors compute() in frontend/js/app.js ──────────────────────
@@ -279,7 +306,23 @@ class Store:
                 UNIQUE (report_date, station)
             );
             CREATE INDEX IF NOT EXISTS idx_records_date ON records (report_date);
+            CREATE TABLE IF NOT EXISTS record_versions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                record_id   INTEGER NOT NULL,
+                report_date TEXT NOT NULL,
+                station     TEXT NOT NULL,
+                action      TEXT NOT NULL,
+                data        TEXT NOT NULL,
+                by_user     TEXT NOT NULL,
+                at          TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_versions_record ON record_versions (record_id);
         """)
+        # Columns added after the first release are added in place on older databases
+        cols = [r["name"] for r in self.conn.execute("PRAGMA table_info(records)").fetchall()]
+        for col in ("deleted_at", "deleted_by", "approved_at", "approved_by"):
+            if col not in cols:
+                self.conn.execute("ALTER TABLE records ADD COLUMN %s TEXT" % col)
         self.conn.commit()
 
     @staticmethod
@@ -289,10 +332,21 @@ class Store:
         rec["uid"] = "rec_" + str(row["id"])
         rec["created_at"] = row["created_at"]
         rec["updated_at"] = row["updated_at"]
+        for col in ("deleted_at", "deleted_by", "approved_at", "approved_by"):
+            rec[col] = row[col]
         return rec
 
-    def list(self, station=None, date=None, date_from=None, date_to=None, limit=None):
-        sql, args = "SELECT * FROM records WHERE 1=1", []
+    def _version(self, rec_id, action, by):
+        """Keep a full copy of the record as it stands after every change."""
+        row = self.conn.execute("SELECT * FROM records WHERE id = ?", (rec_id,)).fetchone()
+        self.conn.execute(
+            "INSERT INTO record_versions (record_id, report_date, station, action, data, by_user, at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (rec_id, row["report_date"], row["station"], action, row["data"], by or "system", now_iso()))
+
+    def list(self, station=None, date=None, date_from=None, date_to=None, limit=None, deleted=False):
+        sql = "SELECT * FROM records WHERE deleted_at IS %s" % ("NOT NULL" if deleted else "NULL")
+        args = []
         if station:
             sql += " AND station = ?"; args.append(station)
         if date:
@@ -307,13 +361,23 @@ class Store:
         with self.lock:
             return [self._row(r) for r in self.conn.execute(sql, args).fetchall()]
 
-    def get(self, rec_id):
+    def get(self, rec_id, deleted=False):
         with self.lock:
-            row = self.conn.execute("SELECT * FROM records WHERE id = ?", (rec_id,)).fetchone()
+            row = self.conn.execute(
+                "SELECT * FROM records WHERE id = ? AND deleted_at IS %s" % ("NOT NULL" if deleted else "NULL"),
+                (rec_id,)).fetchone()
         return self._row(row) if row else None
 
-    def save(self, rec, rec_id=None):
-        """Insert, or update the existing row for the same date+station (or id)."""
+    def find_day(self, station, report_date):
+        """The record for a branch and day, including one sitting in the bin."""
+        with self.lock:
+            row = self.conn.execute("SELECT * FROM records WHERE station = ? AND report_date = ?",
+                                    (station, report_date)).fetchone()
+        return self._row(row) if row else None
+
+    def save(self, rec, rec_id=None, by=None):
+        """Insert, or update the existing row for the same date+station (or id).
+        A day that was moved to the bin comes back out when it is saved again."""
         rec = {**rec, **compute(rec)}
         ts = now_iso()
         data = json.dumps(rec)
@@ -332,9 +396,10 @@ class Store:
                 existing_id, created = rec_id, False
             else:
                 row = self.conn.execute(
-                    "SELECT id FROM records WHERE report_date = ? AND station = ?",
+                    "SELECT id, deleted_at FROM records WHERE report_date = ? AND station = ?",
                     (rec["report_date"], rec["station"])).fetchone()
-                existing_id, created = (row["id"], False) if row else (None, True)
+                existing_id = row["id"] if row else None
+                created = not row or row["deleted_at"] is not None
 
             if existing_id is None:
                 cur = self.conn.execute(
@@ -345,26 +410,79 @@ class Store:
             else:
                 self.conn.execute(
                     """UPDATE records SET report_date = ?, station = ?, gross_revenue = ?,
-                       total_litres = ?, net_profit = ?, total_tax = ?, data = ?, updated_at = ?
+                       total_litres = ?, net_profit = ?, total_tax = ?, data = ?, updated_at = ?,
+                       deleted_at = NULL, deleted_by = NULL
                        WHERE id = ?""", cols + (ts, existing_id))
                 new_id = existing_id
+            self._version(new_id, "create" if created else "update", by)
             self.conn.commit()
         return self.get(new_id), created
 
-    def delete(self, rec_id):
+    def delete(self, rec_id, by=None):
+        """Move a record to the bin. Nothing is erased; an admin can restore it."""
         with self.lock:
-            cur = self.conn.execute("DELETE FROM records WHERE id = ?", (rec_id,))
+            cur = self.conn.execute(
+                "UPDATE records SET deleted_at = ?, deleted_by = ? WHERE id = ? AND deleted_at IS NULL",
+                (now_iso(), by, rec_id))
+            if cur.rowcount:
+                self._version(rec_id, "delete", by)
             self.conn.commit()
         return cur.rowcount
 
-    def delete_all(self, station=None):
+    def delete_all(self, station=None, by=None):
         with self.lock:
+            sql, args = "SELECT id FROM records WHERE deleted_at IS NULL", []
             if station:
-                cur = self.conn.execute("DELETE FROM records WHERE station = ?", (station,))
-            else:
-                cur = self.conn.execute("DELETE FROM records")
+                sql += " AND station = ?"; args.append(station)
+            ids = [r["id"] for r in self.conn.execute(sql, args).fetchall()]
+            ts = now_iso()
+            for rec_id in ids:
+                self.conn.execute("UPDATE records SET deleted_at = ?, deleted_by = ? WHERE id = ?",
+                                  (ts, by, rec_id))
+                self._version(rec_id, "delete", by)
+            self.conn.commit()
+        return len(ids)
+
+    def restore(self, rec_id, by=None):
+        with self.lock:
+            cur = self.conn.execute(
+                "UPDATE records SET deleted_at = NULL, deleted_by = NULL WHERE id = ? AND deleted_at IS NOT NULL",
+                (rec_id,))
+            if cur.rowcount:
+                self._version(rec_id, "restore", by)
             self.conn.commit()
         return cur.rowcount
+
+    def purge(self, rec_id, by=None):
+        """Erase a binned record for good. Its history is kept, ending with the purge."""
+        with self.lock:
+            row = self.conn.execute("SELECT 1 FROM records WHERE id = ? AND deleted_at IS NOT NULL",
+                                    (rec_id,)).fetchone()
+            if not row:
+                return 0
+            self._version(rec_id, "purge", by)
+            self.conn.execute("DELETE FROM records WHERE id = ?", (rec_id,))
+            self.conn.commit()
+        return 1
+
+    def history(self, rec_id):
+        """Every saved version of a record, oldest first, with the fields each one changed."""
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT * FROM record_versions WHERE record_id = ? ORDER BY id", (rec_id,)).fetchall()
+        out, prev = [], None
+        for row in rows:
+            data = json.loads(row["data"])
+            changes = []
+            if prev is not None and row["action"] in ("update", "create"):
+                for field in HISTORY_FIELDS:
+                    before, after = prev.get(field), data.get(field)
+                    if json.dumps(before, sort_keys=True) != json.dumps(after, sort_keys=True):
+                        changes.append({"field": field, "before": before, "after": after})
+            out.append({"version": len(out) + 1, "action": row["action"], "by": row["by_user"],
+                        "at": row["at"], "changes": changes})
+            prev = data
+        return out
 
 
 def analytics(records):
@@ -427,9 +545,25 @@ def verify_password(password, stored):
         return False
 
 
-def check_new_password(password):
+# Passwords that appear at the top of every leaked-password list, plus local favourites
+COMMON_PASSWORDS = {
+    "password", "password1", "password12", "password123", "passw0rd", "12345678", "123456789",
+    "1234567890", "11111111", "00000000", "87654321", "12341234", "12121212", "abcd1234",
+    "1234abcd", "1q2w3e4r", "qwerty12", "qwerty123", "qwertyui", "asdfghjk", "zxcvbnm1",
+    "iloveyou", "letmein1", "welcome1", "changeme", "football", "sunshine", "princess",
+    "admin123", "admin1234", "administrator", "jesus123", "blessed1", "kenya123", "kenya254",
+    "nairobi1", "nairobi123", "mombasa1", "safaricom", "mpesa123", "petrokenya", "petrol123",
+}
+
+
+def check_new_password(password, username=None):
     if not isinstance(password, str) or len(password) < 8:
         raise ApiError(HTTPStatus.BAD_REQUEST, "Password must be at least 8 characters")
+    low = password.lower()
+    if low in COMMON_PASSWORDS or len(set(low)) <= 2:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "That password is too easy to guess — choose another")
+    if username and username.lower() in low:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "Password must not contain the username")
     return password
 
 
@@ -438,7 +572,8 @@ class Auth:
 
     def __init__(self, store):
         self.store = store
-        self.fails = {}  # ip -> [count, first_failure_time]
+        self.fails = {}          # ip -> [count, first_failure_time]
+        self.account_fails = {}  # username (lower case) -> [count, first_failure_time]
         store.conn.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -458,6 +593,9 @@ class Auth:
         cols = [r["name"] for r in store.conn.execute("PRAGMA table_info(users)").fetchall()]
         if "full_name" not in cols:
             store.conn.execute("ALTER TABLE users ADD COLUMN full_name TEXT")
+        scols = [r["name"] for r in store.conn.execute("PRAGMA table_info(sessions)").fetchall()]
+        if "last_seen" not in scols:
+            store.conn.execute("ALTER TABLE sessions ADD COLUMN last_seen REAL")
         store.conn.commit()
 
     @staticmethod
@@ -501,7 +639,7 @@ class Auth:
         station = (station or "").strip() or None
         if station and station not in STATIONS:
             raise ApiError(HTTPStatus.BAD_REQUEST, "Unknown station")
-        check_new_password(password)
+        check_new_password(password, username)
         try:
             with self.store.lock:
                 cur = self.store.conn.execute(
@@ -524,7 +662,10 @@ class Auth:
                 "SELECT * FROM users WHERE username = ?", ((username or "").strip(),)).fetchone()
 
     def set_password(self, user_id, password):
-        check_new_password(password)
+        user = self.get(user_id)
+        if not user:
+            raise ApiError(HTTPStatus.NOT_FOUND, "User not found")
+        check_new_password(password, user["username"])
         with self.store.lock:
             cur = self.store.conn.execute("UPDATE users SET pw_hash = ? WHERE id = ?",
                                           (hash_password(password), user_id))
@@ -546,41 +687,70 @@ class Auth:
             self.store.conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
             self.store.conn.commit()
 
-    # Login throttling, per client IP
-    def throttled(self, ip):
-        entry = self.fails.get(ip)
+    # Login throttling: per device (IP) and per account, so neither a fake address nor
+    # many devices can keep guessing one password
+    @staticmethod
+    def _over(table, key, limit):
+        entry = table.get(key)
         if entry and time.time() - entry[1] > LOGIN_WINDOW:
-            self.fails.pop(ip, None)
+            table.pop(key, None)
             return False
-        return bool(entry and entry[0] >= LOGIN_MAX_FAILS)
+        return bool(entry and entry[0] >= limit)
+
+    def throttled(self, ip):
+        return self._over(self.fails, ip, LOGIN_MAX_FAILS)
 
     def login(self, username, password, ip):
+        account = (username or "").strip().lower()
         if self.throttled(ip):
             raise ApiError(HTTPStatus.TOO_MANY_REQUESTS, "Too many failed attempts — try again in 15 minutes")
+        if self._over(self.account_fails, account, ACCOUNT_MAX_FAILS):
+            raise ApiError(HTTPStatus.TOO_MANY_REQUESTS,
+                           "This account is paused for 15 minutes after too many wrong passwords")
         row = self.find(username)
         if not row or not verify_password(password or "", row["pw_hash"]):
-            entry = self.fails.setdefault(ip, [0, time.time()])
-            entry[0] += 1
+            for table, key in ((self.fails, ip), (self.account_fails, account)):
+                table.setdefault(key, [0, time.time()])[0] += 1
             raise ApiError(HTTPStatus.UNAUTHORIZED, "Wrong username or password")
         self.fails.pop(ip, None)
+        self.account_fails.pop(account, None)
         token = secrets.token_urlsafe(32)
+        now = time.time()
         with self.store.lock:
-            self.store.conn.execute("DELETE FROM sessions WHERE expires_at < ?", (time.time(),))
-            self.store.conn.execute("INSERT INTO sessions VALUES (?, ?, ?)",
-                                    (hashlib.sha256(token.encode()).hexdigest(), row["id"],
-                                     time.time() + SESSION_DAYS * 86400))
+            self.store.conn.execute("DELETE FROM sessions WHERE expires_at < ? OR last_seen < ?",
+                                    (now, now - IDLE_HOURS * 3600))
+            self.store.conn.execute(
+                "INSERT INTO sessions (token_hash, user_id, expires_at, last_seen) VALUES (?, ?, ?, ?)",
+                (hashlib.sha256(token.encode()).hexdigest(), row["id"], now + SESSION_DAYS * 86400, now))
             self.store.conn.commit()
         return token, self.public(row)
 
     def user_for(self, token):
         if not token:
             return None
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        now = time.time()
         with self.store.lock:
             row = self.store.conn.execute(
-                """SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
-                   WHERE s.token_hash = ? AND s.expires_at > ?""",
-                (hashlib.sha256(token.encode()).hexdigest(), time.time())).fetchone()
+                """SELECT u.*, s.last_seen AS s_last_seen FROM sessions s JOIN users u ON u.id = s.user_id
+                   WHERE s.token_hash = ? AND s.expires_at > ?
+                     AND (s.last_seen IS NULL OR s.last_seen > ?)""",
+                (token_hash, now, now - IDLE_HOURS * 3600)).fetchone()
+            # Note activity at most once a minute, which keeps an active sign-in alive
+            if row and (row["s_last_seen"] or 0) < now - 60:
+                self.store.conn.execute("UPDATE sessions SET last_seen = ? WHERE token_hash = ?",
+                                        (now, token_hash))
+                self.store.conn.commit()
         return self.public(row) if row else None
+
+    def logout_everywhere(self, user_id, keep_token=None):
+        """End a user's sign-ins on every device, optionally keeping the current one."""
+        keep = hashlib.sha256(keep_token.encode()).hexdigest() if keep_token else ""
+        with self.store.lock:
+            cur = self.store.conn.execute("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?",
+                                          (user_id, keep))
+            self.store.conn.commit()
+        return cur.rowcount
 
     def logout(self, token):
         if token:
@@ -607,6 +777,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "same-origin")
+        if self._https():
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
         for k, v in (extra or {}).items():
             if isinstance(v, list):
                 for item in v:
@@ -645,8 +817,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _client_ip(self):
         fwd = self.headers.get("X-Forwarded-For")
-        # Rightmost entry is the one added by the proxy directly in front of us
-        return fwd.split(",")[-1].strip() if fwd else self.client_address[0]
+        if TRUST_PROXY and fwd:
+            # Rightmost entry is the one added by the proxy directly in front of us
+            return fwd.split(",")[-1].strip()
+        return self.client_address[0]
 
     def _token(self):
         for part in (self.headers.get("Cookie") or "").split(";"):
@@ -691,8 +865,17 @@ class Handler(BaseHTTPRequestHandler):
         if user["role"] != "admin":
             raise ApiError(HTTPStatus.FORBIDDEN, "Admins only")
 
-    def _own_record(self, user, rec_id):
-        rec = self.store.get(rec_id)
+    @staticmethod
+    def _check_editable(user, report_date):
+        """Nobody saves a future day; staff may only change today's and yesterday's records."""
+        if report_date > today():
+            raise ApiError(HTTPStatus.BAD_REQUEST, "You can't save a record for a future date")
+        if user["role"] == "staff" and report_date < days_before(today(), STAFF_EDIT_DAYS):
+            raise ApiError(HTTPStatus.FORBIDDEN,
+                           "Records older than yesterday are locked — ask an admin to change them")
+
+    def _own_record(self, user, rec_id, deleted=False):
+        rec = self.store.get(rec_id, deleted=deleted)
         if not rec:
             raise ApiError(HTTPStatus.NOT_FOUND, "Record not found")
         if user["role"] == "staff" and user["station"] and rec["station"] != user["station"]:
@@ -746,6 +929,9 @@ class Handler(BaseHTTPRequestHandler):
             token, _ = self.auth.login(user["username"], body.get("new_password"), self._client_ip())
             return self._json(HTTPStatus.OK, {"ok": True},
                               {"Set-Cookie": self._cookie(token, SESSION_DAYS * 86400)})
+        if path == "/api/me/logout-all" and m == "POST":
+            ended = self.auth.logout_everywhere(user["id"], keep_token=self._token())
+            return self._json(HTTPStatus.OK, {"signed_out": ended})
         if path == "/api/me/name" and m == "POST":
             updated = self.auth.set_full_name(user["id"], self._body().get("full_name"))
             return self._json(HTTPStatus.OK, {"user": updated})
@@ -775,14 +961,16 @@ class Handler(BaseHTTPRequestHandler):
             if m == "POST":
                 rec = clean_input(self._body())
                 self._station_scope(user, rec["station"])
+                self._check_editable(user, rec["report_date"])
                 existing = self.store.list(rec["station"], rec["report_date"])
                 stamp_operator(rec, existing[0] if existing else None, user)
-                saved, created = self.store.save(rec)
+                saved, created = self.store.save(rec, by=user["username"])
                 return self._json(HTTPStatus.CREATED if created else HTTPStatus.OK,
                                   {"created": created, "record": saved})
             if m == "DELETE":
                 self._require_admin(user)
-                return self._json(HTTPStatus.OK, {"deleted": self.store.delete_all(q.get("station"))})
+                return self._json(HTTPStatus.OK, {"deleted": self.store.delete_all(
+                    q.get("station"), by=user["username"])})
 
         mm = re.fullmatch(r"/api/records/(\d+)", path)
         if mm:
@@ -793,13 +981,43 @@ class Handler(BaseHTTPRequestHandler):
                 existing = self._own_record(user, rec_id)
                 rec = clean_input(self._body())
                 self._station_scope(user, rec["station"])
+                self._check_editable(user, existing["report_date"])
+                self._check_editable(user, rec["report_date"])
                 stamp_operator(rec, existing, user)
-                saved, _ = self.store.save(rec, rec_id=rec_id)
+                saved, _ = self.store.save(rec, rec_id=rec_id, by=user["username"])
                 return self._json(HTTPStatus.OK, {"created": False, "record": saved})
             if m == "DELETE":
-                self._own_record(user, rec_id)
-                self.store.delete(rec_id)
+                existing = self._own_record(user, rec_id)
+                self._check_editable(user, existing["report_date"])
+                self.store.delete(rec_id, by=user["username"])
                 return self._json(HTTPStatus.OK, {"deleted": 1})
+
+        mm = re.fullmatch(r"/api/records/(\d+)/history", path)
+        if mm and m == "GET":
+            rec_id = int(mm.group(1))
+            if not self.store.get(rec_id) and user["role"] == "admin":
+                self._own_record(user, rec_id, deleted=True)   # admins can read a binned record's history
+            else:
+                self._own_record(user, rec_id)
+            return self._json(HTTPStatus.OK, {"history": self.store.history(rec_id)})
+
+        # ── Bin: deleted records, admin only ──
+        if path == "/api/bin" and m == "GET":
+            self._require_admin(user)
+            recs = self.store.list(station=q.get("station"), deleted=True)
+            return self._json(HTTPStatus.OK, {"count": len(recs), "records": recs})
+        mm = re.fullmatch(r"/api/bin/(\d+)(/restore)?", path)
+        if mm:
+            self._require_admin(user)
+            rec_id = int(mm.group(1))
+            if mm.group(2) and m == "POST":
+                if not self.store.restore(rec_id, by=user["username"]):
+                    raise ApiError(HTTPStatus.NOT_FOUND, "That record is not in the bin")
+                return self._json(HTTPStatus.OK, {"record": self.store.get(rec_id)})
+            if not mm.group(2) and m == "DELETE":
+                if not self.store.purge(rec_id, by=user["username"]):
+                    raise ApiError(HTTPStatus.NOT_FOUND, "That record is not in the bin")
+                return self._json(HTTPStatus.OK, {"purged": 1})
 
         if path == "/api/users":
             self._require_admin(user)
@@ -812,13 +1030,17 @@ class Handler(BaseHTTPRequestHandler):
                                            body.get("full_name"))
                 return self._json(HTTPStatus.CREATED, {"user": created})
 
-        mm = re.fullmatch(r"/api/users/(\d+)(/password)?", path)
+        mm = re.fullmatch(r"/api/users/(\d+)(/password|/logout)?", path)
         if mm:
             self._require_admin(user)
             uid = int(mm.group(1))
-            if mm.group(2) and m == "POST":
+            if mm.group(2) == "/password" and m == "POST":
                 self.auth.set_password(uid, self._body().get("password"))
                 return self._json(HTTPStatus.OK, {"ok": True})
+            if mm.group(2) == "/logout" and m == "POST":
+                if not self.auth.get(uid):
+                    raise ApiError(HTTPStatus.NOT_FOUND, "User not found")
+                return self._json(HTTPStatus.OK, {"signed_out": self.auth.logout_everywhere(uid)})
             if not mm.group(2) and m == "DELETE":
                 if uid == user["id"]:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "You cannot delete your own account")
@@ -854,7 +1076,10 @@ def bootstrap_admin(auth):
     user = os.environ.get("PK_ADMIN_USER")
     password = os.environ.get("PK_ADMIN_PASSWORD")
     if user and password:
-        auth.create(user, password, "admin")
+        try:
+            auth.create(user, password, "admin")
+        except ApiError as e:
+            sys.exit("PK_ADMIN_USER / PK_ADMIN_PASSWORD were refused: %s" % e.message)
         print(f"   Created admin '{user}' from PK_ADMIN_USER / PK_ADMIN_PASSWORD.")
         return
     password = secrets.token_urlsafe(9)

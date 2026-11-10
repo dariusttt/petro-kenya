@@ -127,9 +127,14 @@ async function logout() {
   $('fOperator').value = '';
   try { localStorage.removeItem(CACHE_KEY); localStorage.removeItem('pk_user'); } catch (e) { /* ignore */ }
   closeAccount();
+  closeDetail();
   clearFormForNewEntry();
   loadRecs();
   renderAnalytics();
+  // The next person to sign in starts from the menu, not the page left open
+  openedFromMenu = false;
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* ignore */ }
+  showPage(null);
   showLogin();
 }
 
@@ -149,6 +154,133 @@ function applyUserToUI() {
   $('filterStationBtn').style.display = fixed ? 'none' : '';
   if (fixed) $('filterStation').style.display = 'none';
   $('eraseAllBtn').style.display = isAdmin ? '' : 'none';
+  $('binBtn').style.display = isAdmin ? '' : 'none';
+  updateLockState();
+}
+
+// ── Edit locks: staff may change today's and yesterday's records only (server enforces) ─
+function dateMinus(dateStr, days) {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() - days);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function lockReason(date) {
+  if (!date) return '';
+  if (date > todayLocal()) return "This date is in the future, so it can't be saved yet.";
+  if (USER && USER.role === 'staff' && date < dateMinus(todayLocal(), 1))
+    return '🔒 This day is locked. Staff can change today\'s and yesterday\'s records only — ask an admin to change it.';
+  return '';
+}
+
+function updateLockState() {
+  const reason = lockReason(sv('fDate'));
+  const banner = $('lockBanner');
+  if (banner) { banner.textContent = reason; banner.hidden = !reason; }
+  document.querySelectorAll('[data-save-btn]').forEach(b => { b.disabled = !!reason; b.title = reason; });
+}
+
+async function logoutOtherDevices() {
+  if (!requireOnline('sign out other devices')) return;
+  try {
+    const { signed_out } = await api('POST', '/me/logout-all', {});
+    toast(signed_out ? `✅ Signed out on ${signed_out} other device${signed_out === 1 ? '' : 's'}` : 'No other devices were signed in');
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+async function signOutUser(id, name) {
+  const ok = await showConfirmModal('Sign out ' + name + '?', name + ' will be signed out on every device and must sign in again.');
+  if (!ok) return;
+  try {
+    await api('POST', '/users/' + id + '/logout', {});
+    toast('✅ ' + name + ' signed out everywhere');
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+// ── Change history (shown in a record's details) ─────────────────────────────
+const FIELD_LABELS = {
+  report_date: 'Date', station: 'Branch', shift: 'Shift',
+  petrol_open: 'Petrol opening meter', petrol_close: 'Petrol closing meter', petrol_price: 'Petrol price',
+  petrol_cost: 'Petrol cost', petrol_sales_open: 'Petrol opening sales meter', petrol_sales_close: 'Petrol closing sales meter',
+  diesel_open: 'Diesel opening meter', diesel_close: 'Diesel closing meter', diesel_price: 'Diesel price',
+  diesel_cost: 'Diesel cost', diesel_sales_open: 'Diesel opening sales meter', diesel_sales_close: 'Diesel closing sales meter',
+  kero_open: 'Kerosene opening meter', kero_close: 'Kerosene closing meter', kero_price: 'Kerosene price',
+  kero_cost: 'Kerosene cost', kero_sales_open: 'Kerosene opening sales meter', kero_sales_close: 'Kerosene closing sales meter',
+  petrol_dip_open: 'Petrol opening dip', petrol_delivered: 'Petrol delivered', petrol_dip_close: 'Petrol closing dip',
+  diesel_dip_open: 'Diesel opening dip', diesel_delivered: 'Diesel delivered', diesel_dip_close: 'Diesel closing dip',
+  kero_dip_open: 'Kerosene opening dip', kero_delivered: 'Kerosene delivered', kero_dip_close: 'Kerosene closing dip',
+  mpesa_amount: 'M-Pesa', mpesa_txns: 'M-Pesa transactions', cash_amount: 'Cash', credit_amount: 'Credit sales',
+  card_amount: 'Card', float_amount: 'Opening float', banked_amount: 'Cash banked',
+  exp_wages: 'Wages', exp_elec: 'Electricity', exp_water: 'Water', exp_maint: 'Maintenance',
+  exp_lubes: 'Lubricants stock', exp_misc: 'Miscellaneous', misc_items: 'Miscellaneous items',
+  gas_items: 'Gas & lubricant sales', invoices: 'Credit invoices', mpesa_till: 'M-Pesa till',
+  mpesa_ref: 'M-Pesa ref', credit_customer: 'Credit customer', kra_pin: 'KRA PIN', kra_business: 'Business name',
+  kra_period: 'Tax period', kra_branch: 'KRA branch', kra_etr: 'ETR number', kra_return_type: 'Return type',
+  kra_remarks: 'Remarks'
+};
+const ACTION_LABELS = { create: 'Created', update: 'Changed', delete: 'Moved to bin', restore: 'Restored from bin', purge: 'Deleted for good' };
+
+function histValue(v) {
+  if (Array.isArray(v)) return v.length + ' item' + (v.length === 1 ? '' : 's');
+  if (v === null || v === undefined || v === '') return '—';
+  return typeof v === 'number' ? fmt(v) : String(v);
+}
+
+async function loadHistory(id) {
+  const box = $('rdHistory');
+  box.innerHTML = '<div class="m-row"><span>Loading…</span></div>';
+  try {
+    const { history } = await api('GET', '/records/' + id + '/history');
+    if (DETAIL_ID !== Number(id)) return;
+    box.innerHTML = history.slice().reverse().map(h => `
+      <div class="m-row">
+        <span class="hist-head">${esc(ACTION_LABELS[h.action] || h.action)} by ${esc(h.by)} · ${esc(new Date(h.at).toLocaleString('en-KE'))}</span>
+        ${h.changes.map(ch => `<span class="hist-change">${esc(FIELD_LABELS[ch.field] || ch.field)}: <b>${esc(histValue(ch.before))}</b> → <b>${esc(histValue(ch.after))}</b></span>`).join('')}
+      </div>`).join('') || '<div class="m-row"><span>No history yet.</span></div>';
+  } catch (e) {
+    box.innerHTML = `<div class="m-row"><span>${esc(ONLINE ? e.message : 'History needs an internet connection.')}</span></div>`;
+  }
+}
+
+// ── Bin (admin): restore or delete records for good ──────────────────────────
+async function openBin() {
+  $('binOverlay').classList.add('open');
+  const list = $('binList');
+  list.innerHTML = '<div class="m-row"><span>Loading…</span></div>';
+  try {
+    const { records } = await api('GET', '/bin');
+    list.innerHTML = records.map(r => `
+      <div class="m-row" style="align-items:center;gap:10px;flex-wrap:wrap">
+        <span>${esc(r.report_date)} · ${esc(r.station)}<br>
+          <small style="color:var(--mut)">KES ${fmt(r.gross_revenue)} · moved by ${esc(r.deleted_by || '—')} · ${esc(new Date(r.deleted_at).toLocaleString('en-KE'))}</small></span>
+        <span style="display:flex;gap:6px">
+          <button class="btn btn-b btn-xs" onclick="restoreFromBin(${Number(r.id)})">↩ Restore</button>
+          <button class="btn btn-r btn-xs" onclick="purgeFromBin(${Number(r.id)}, '${esc(r.report_date)}')">Delete for good</button>
+        </span>
+      </div>`).join('') || '<div class="m-row"><span>The bin is empty.</span></div>';
+  } catch (e) {
+    list.innerHTML = `<div class="m-row"><span style="color:var(--red)">${esc(e.message)}</span></div>`;
+  }
+}
+function closeBin() { $('binOverlay').classList.remove('open'); }
+
+async function restoreFromBin(id) {
+  try {
+    await api('POST', '/bin/' + id + '/restore', {});
+    toast('↩ Record restored');
+    await refreshRecs();
+    openBin();
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+async function purgeFromBin(id, date) {
+  const ok = await showConfirmModal('Delete for good?', 'The ' + date + ' record will be removed from the bin. Its change history is kept.');
+  if (!ok) return;
+  try {
+    await api('DELETE', '/bin/' + id);
+    toast('🗑️ Deleted for good');
+    openBin();
+  } catch (e) { toast('⚠️ ' + e.message, true); }
 }
 
 async function startSession() {
@@ -200,7 +332,8 @@ async function loadUsers() {
       <div class="m-row" style="align-items:center;gap:8px">
         <span>${esc(displayName(u))} <small style="color:var(--mut)">· ${u.full_name ? esc(u.username) + ' · ' : ''}${esc(u.role)}${u.station ? ' · ' + esc(u.station) : ''}</small></span>
         <span style="display:flex;gap:6px">
-          <button class="btn btn-o btn-xs" onclick="resetUserPassword(${u.id}, '${esc(u.username)}')">🔑</button>
+          <button class="btn btn-o btn-xs" title="Reset password" onclick="resetUserPassword(${u.id}, '${esc(u.username)}')">🔑</button>
+          ${u.id === USER.id ? '' : `<button class="btn btn-o btn-xs" title="Sign out on every device" onclick="signOutUser(${u.id}, '${esc(u.username)}')">⎋</button>`}
           ${u.id === USER.id ? '' : `<button class="btn btn-r btn-xs" onclick="deleteUser(${u.id}, '${esc(u.username)}')">✕</button>`}
         </span>
       </div>`).join('');
@@ -646,6 +779,7 @@ function loadRecordForDateAndStation() {
   if (!date || !station) return;
 
   const existing = RECS.find(r => r.report_date === date && r.station === station);
+  updateLockState();
 
   if (existing) {
     populateFormFromRecord(existing);
@@ -658,6 +792,8 @@ function loadRecordForDateAndStation() {
 
 // ── Save record ───────────────────────────────────────────────────────────────
 async function saveRec() {
+  const locked = lockReason(sv('fDate'));
+  if (locked) { toast(locked, true); return; }
   const c = COMP;
   if (!c || c.grossRev === undefined) {
     toast('⚠️ No data to save — fill in fuel readings first', true);
@@ -753,19 +889,19 @@ async function eraseAllRecs() {
     : `ALL ${count} record${count !== 1 ? 's' : ''} from every branch`;
 
   const confirmed = await showConfirmModal(
-    'Permanently Erase Records?',
-    `This will delete ${target}.\n\nThis action CANNOT be undone.`
+    'Move Records to the Bin?',
+    `This will move ${target} to the bin.\n\nAn admin can restore them from the bin.`
   );
 
   if (!confirmed) {
-    toast('Erase cancelled — no records were deleted');
+    toast('Cancelled — nothing was moved');
     return;
   }
 
   if (!requireOnline('erase records')) return;
   try {
     await api('DELETE', '/records' + (filterBranch ? '?station=' + encodeURIComponent(filterBranch) : ''));
-    toast(filterBranch ? `🗑️ All records for ${filterBranch} erased` : '🗑️ All records erased from every branch');
+    toast(filterBranch ? `🗑️ All records for ${filterBranch} moved to the bin` : '🗑️ All records moved to the bin');
     await refreshRecs();
   } catch (e) {
     toast('⚠️ Erase failed: ' + e.message, true);
@@ -1127,7 +1263,7 @@ function loadRecs() {
 
 // ── Delete a record ───────────────────────────────────────────────────────────
 async function delRec(btn) {
-  const ok = await showConfirmModal('Delete Record?', 'This record will be permanently deleted.');
+  const ok = await showConfirmModal('Move to Bin?', 'This record will be moved to the bin. An admin can restore it.');
   if (!ok) return;
 
   const id = Number(btn.dataset.id);
@@ -1139,7 +1275,7 @@ async function delRec(btn) {
   if (!requireOnline('delete records')) return;
   try {
     await api('DELETE', '/records/' + id);
-    toast('🗑️ Record deleted');
+    toast('🗑️ Moved to the bin');
   } catch (e) {
     toast('⚠️ Delete failed: ' + e.message, true);
   }
@@ -1157,6 +1293,8 @@ function openDetail(evt, id) {
   if (!r) { toast('⚠️ Record not found', true); return; }
 
   DETAIL_ID = Number(id);
+  loadHistory(id);
+  $('rdDeleteBtn').disabled = !!lockReason(r.report_date) && !(USER && USER.role === 'admin');
 
   const num = v => Number(v || 0);
 
@@ -1323,13 +1461,13 @@ function closeConfirmModal(result) {
 
 async function deleteFromDetail() {
   if (DETAIL_ID === null) return;
-  const ok = await showConfirmModal('Delete Record?', 'This record will be permanently deleted.');
+  const ok = await showConfirmModal('Move to Bin?', 'This record will be moved to the bin. An admin can restore it.');
   if (!ok) return;
 
   if (!requireOnline('delete records')) return;
   try {
     await api('DELETE', '/records/' + DETAIL_ID);
-    toast('🗑️ Record deleted');
+    toast('🗑️ Moved to the bin');
   } catch (e) {
     toast('⚠️ Delete failed: ' + e.message, true);
   }
@@ -1522,7 +1660,7 @@ function todayLocal() {
 // ── Apply today's date to the date field + header ────────────────────────────
 function applyTodayDate() {
   const dateEl = $('fDate');
-  if (dateEl) dateEl.value = todayLocal();
+  if (dateEl) { dateEl.value = todayLocal(); dateEl.max = todayLocal(); }
   const now = new Date();
   $('hDate').textContent = now.toLocaleDateString('en-KE',
     { weekday:'short', day:'numeric', month:'short', year:'numeric' });

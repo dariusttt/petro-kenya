@@ -50,7 +50,7 @@ would be wiped on every restart).
 
 **Railway** also works: create a service from the repo (it uses the `Procfile`),
 add a volume mounted at `/data`, and set `PK_DB=/data/petrokenya.sqlite3`,
-`PK_ADMIN_USER`, `PK_ADMIN_PASSWORD` and `PK_SECURE_COOKIE=1`.
+`PK_ADMIN_USER`, `PK_ADMIN_PASSWORD`, `PK_SECURE_COOKIE=1` and `PK_TRUST_PROXY=1`.
 
 Back up the database by downloading the `.sqlite3` file, or use **📥 Export CSV**.
 
@@ -66,9 +66,27 @@ Back up the database by downloading the `.sqlite3` file, or use **📥 Export CS
 
 | Role | Can do |
 |------|--------|
-| **admin** | Everything: all branches, erase records, add/remove users, reset passwords |
-| **staff** with a branch | Only that branch — see, save and delete its records |
-| **staff** without a branch | All branches, but no bulk erase and no user management |
+| **admin** | Everything: all branches, any date, the bin, add/remove users, reset passwords, sign users out |
+| **staff** with a branch | Only that branch — see its records; save or bin today's and yesterday's |
+| **staff** without a branch | All branches, same date limit, no bulk moves and no user management |
+
+**Keeping records honest**
+
+- Every save keeps a full copy of the record. A record's details show its change
+  history: who changed what, from what to what, and when.
+- Deleting moves a record to the **🗑️ Bin** (Records page). Only admins can restore it
+  or delete it for good; its history is kept even then.
+- Staff can only change today's and yesterday's records; older days are locked.
+  Nobody can save a future date.
+
+**Sign-in safety**
+
+- A sign-in lasts 7 days and ends after 8 hours without use.
+- After 5 wrong passwords from one device, or 10 for one account from any devices,
+  sign-in pauses for 15 minutes.
+- Passwords need 8+ characters and can't be a common password or contain the username.
+- **👤 → Sign out other devices** ends your other sign-ins; admins can sign any user
+  out everywhere (⎋ next to the user).
 
 Admins manage users in the app under **👤**. From a terminal you can also run:
 
@@ -86,6 +104,7 @@ python3 backend/server.py reset-password mary
 | `PK_DB` | `backend/petrokenya.sqlite3` | Database file |
 | `PK_ADMIN_USER`, `PK_ADMIN_PASSWORD` | — | Admin created on first start (otherwise `admin` + random password) |
 | `PK_SECURE_COOKIE` | auto | `1` forces the Secure cookie flag (auto when behind an HTTPS proxy) |
+| `PK_TRUST_PROXY` | off | `1` reads the visitor's address from `X-Forwarded-For`. Set it **only** behind a proxy you control (Render, Railway); never when the server faces the internet directly |
 
 ## API
 

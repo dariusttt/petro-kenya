@@ -15,6 +15,8 @@ services:
         value: /var/data/petrokenya.sqlite3
       - key: PK_SECURE_COOKIE
         value: "1"
+      - key: PK_TRUST_PROXY   # Render's proxy sets X-Forwarded-For
+        value: "1"
       - key: PK_ADMIN_USER
         value: admin
       - key: PK_ADMIN_PASSWORD

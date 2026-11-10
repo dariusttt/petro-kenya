@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PetroKenya">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/styles.css?v=5">
+<link rel="stylesheet" href="css/styles.css?v=6">
 </head>
 <body>
 
@@ -154,6 +154,7 @@
         <div class="page-ctx" id="pageCtx">—</div>
       </div>
     </div>
+    <div class="lock-banner" id="lockBanner" hidden></div>
   <!-- ══ PANEL: FUEL ══ -->
   <div class="panel" id="p-fuel">
     <div class="g2">
@@ -645,7 +646,7 @@
 
         <div class="actions">
           <button class="btn btn-y" onclick="openKra()">📋 Preview & File KRA Return</button>
-          <button class="btn btn-g" onclick="saveRec()">💾 Save Daily Record</button>
+          <button class="btn btn-g" data-save-btn onclick="saveRec()">💾 Save Daily Record</button>
           <button class="btn btn-o" onclick="window.print()">🖨️ Print Report</button>
           <button class="btn btn-b" onclick="exportCSV()">📥 Export CSV</button>
           <button class="btn btn-r" onclick="clearAll()">🗑️ Clear Form</button>
@@ -693,7 +694,8 @@
         <option value="Nakuru Branch">Nakuru Branch</option>
       </select>
       <span id="recCount" style="font-family:var(--mono);font-size:.72rem;color:var(--mut);margin-left:auto"></span>
-      <button class="btn btn-r" id="eraseAllBtn" onclick="eraseAllRecs()" style="margin-left:4px">🗑️ Erase All Records</button>
+      <button class="btn btn-o" id="binBtn" onclick="openBin()" style="margin-left:4px">🗑️ Bin</button>
+      <button class="btn btn-r" id="eraseAllBtn" onclick="eraseAllRecs()">Move All to Bin</button>
     </div>
     <div class="tbl-wrap">
       <table>
@@ -757,7 +759,7 @@
     <div class="m-foot">
       <button class="btn btn-o" onclick="closeKra()">Close</button>
       <button class="btn btn-y" onclick="window.print()">🖨️ Print / Download</button>
-      <button class="btn btn-g" onclick="saveRec().then(closeKra)">💾 Save Record</button>
+      <button class="btn btn-g" data-save-btn onclick="saveRec().then(closeKra)">💾 Save Record</button>
     </div>
   </div>
 </div>
@@ -842,6 +844,11 @@
       <div class="m-row"><span>Return Type</span><span id="rdKraType">—</span></div>
     </div>
 
+    <div class="m-sec">
+      <div class="m-sec-ttl">🕘 Change History</div>
+      <div id="rdHistory" class="history-list"><div class="m-row"><span>Loading…</span></div></div>
+    </div>
+
     <div class="m-sec" id="rdRemarksSec" style="display:none">
       <div class="m-sec-ttl">Remarks</div>
       <div id="rdRemarks" style="font-family:var(--mono);font-size:.74rem;color:var(--mut)">—</div>
@@ -850,7 +857,7 @@
     <div class="m-foot">
       <button class="btn btn-o" onclick="closeDetail()">Close</button>
       <button class="btn btn-y" onclick="window.print()">🖨️ Print</button>
-      <button class="btn btn-r" id="rdDeleteBtn" onclick="deleteFromDetail()">🗑️ Delete Record</button>
+      <button class="btn btn-r" id="rdDeleteBtn" onclick="deleteFromDetail()">🗑️ Move to Bin</button>
     </div>
   </div>
 </div>
@@ -913,7 +920,7 @@
       <div class="g2" style="gap:10px">
         <div class="ig"><label for="pwCurrent">Current Password</label>
           <input type="password" id="pwCurrent" autocomplete="current-password"></div>
-        <div class="ig"><label for="pwNew">New Password (8+ chars)</label>
+        <div class="ig"><label for="pwNew">New Password (8+ chars, not a common one)</label>
           <input type="password" id="pwNew" autocomplete="new-password"></div>
       </div>
       <div class="actions" style="margin-top:10px">
@@ -929,7 +936,7 @@
           <input type="text" id="nuFullName" maxlength="60" placeholder="e.g. Mary Wanjiku"></div>
         <div class="ig"><label for="nuName">Username</label>
           <input type="text" id="nuName" autocapitalize="none" spellcheck="false"></div>
-        <div class="ig"><label for="nuPass">Password (8+ chars)</label>
+        <div class="ig"><label for="nuPass">Password (8+ chars, not a common one)</label>
           <input type="password" id="nuPass" autocomplete="new-password"></div>
         <div class="ig"><label for="nuRole">Role</label>
           <select id="nuRole">
@@ -954,14 +961,28 @@
     </div>
 
     <div class="m-foot">
+      <button class="btn btn-o" onclick="logoutOtherDevices()">Sign out other devices</button>
       <button class="btn btn-r" onclick="logout()">⎋ Sign out</button>
       <button class="btn btn-o" onclick="closeAccount()">Close</button>
     </div>
   </div>
 </div>
 
+<!-- ══ BIN (admin) ══ -->
+<div class="overlay" id="binOverlay">
+  <div class="modal" style="max-width:640px">
+    <div class="m-title">🗑️ Bin</div>
+    <div class="m-sub">Records moved to the bin. Restore one to put it back, or delete it for good.
+      Every version stays in the change history either way.</div>
+    <div id="binList"></div>
+    <div class="m-foot">
+      <button class="btn btn-o" onclick="closeBin()">Close</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
-<script src="js/app.js?v=5"></script>
+<script src="js/app.js?v=6"></script>
 </body>
 </html>

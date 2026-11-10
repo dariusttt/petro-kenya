@@ -294,3 +294,13 @@ body:not(.in-page) .panels .panel{display:none}
 body.in-page .home-only,body.in-page .top-bar,body.in-page .cards,body.in-page .tabs{display:none}
 body.in-page .page-bar{display:flex}
 @media (min-width:761px){.workspace .tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}
+
+/* ════ CHANGE HISTORY, BIN, LOCKS ════ */
+.history-list .m-row{flex-direction:column;align-items:flex-start;gap:4px}
+.history-list .m-row span:last-child{color:var(--mut);font-weight:400;text-align:left}
+.hist-head{color:var(--txt)}
+.hist-change{font-size:.7rem;color:var(--mut)}
+.hist-change b{color:var(--acc2);font-weight:600}
+.lock-banner{margin-bottom:16px;padding:11px 15px;border-radius:8px;font-family:var(--mono);font-size:.74rem;
+  background:rgba(245,197,24,.07);border:1px solid rgba(245,197,24,.25);color:var(--acc2);line-height:1.6}
+.btn:disabled{opacity:.45;cursor:not-allowed}
