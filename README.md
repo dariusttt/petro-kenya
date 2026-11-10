@@ -95,6 +95,28 @@ Back up the database by downloading the `.sqlite3` file, or use **📥 Export CS
   ordered and received, and tank dips before and after. Received litres fill the
   deliveries boxes; short deliveries and dip differences are shown.
 
+**Money and stock checks**
+
+- **👷 Cash per Attendant** (Payments page): for each attendant, the sales on their
+  pumps against the cash and M-Pesa they handed in; shortages are shown per person.
+- **🧾 Credit Accounts** (menu): customer accounts with credit limits (set by managers
+  or admins), balances, payments and printable statements. Pick the account on the
+  invoice form (Expenses page); the app warns before an invoice goes over the limit.
+  Admins can void a wrongly entered payment; the voided payment is kept on record.
+- **🔔 Alerts** (managers and admins): raised automatically when a saved day shows a
+  tank shortage, low tank stock, a cash shortage, an attendant shortage, changed
+  opening readings or a short delivery. They clear themselves when the day is
+  corrected. Admins set the limits and the alert email addresses under
+  **👤 → Alert Settings**.
+- **📈 Monthly Report** (menu): one month's totals for each branch side by side, a
+  day-by-day list, **Print / PDF** and **Download for Excel**.
+
+**Alert emails** need a mail account on the server. With Gmail, turn on 2-step
+verification, create an *app password*, and set on the server:
+`PK_SMTP_HOST=smtp.gmail.com`, `PK_SMTP_PORT=587`, `PK_SMTP_USER=you@gmail.com`,
+`PK_SMTP_PASSWORD=<the app password>` (keep it secret: set it as a secret on Render,
+never in the code). Then use **Send Test Email** in Alert Settings.
+
 **Sign-in safety**
 
 - A sign-in lasts 7 days and ends after 8 hours without use.
@@ -120,6 +142,7 @@ python3 backend/server.py reset-password mary
 | `PK_DB` | `backend/petrokenya.sqlite3` | Database file |
 | `PK_ADMIN_USER`, `PK_ADMIN_PASSWORD` | — | Admin created on first start (otherwise `admin` + random password) |
 | `PK_SECURE_COOKIE` | auto | `1` forces the Secure cookie flag (auto when behind an HTTPS proxy) |
+| `PK_SMTP_HOST`, `PK_SMTP_PORT`, `PK_SMTP_USER`, `PK_SMTP_PASSWORD`, `PK_SMTP_FROM` | — | Mail account for alert emails (port 587 uses STARTTLS, 465 uses SSL) |
 | `PK_TRUST_PROXY` | off | `1` reads the visitor's address from `X-Forwarded-For`. Set it **only** behind a proxy you control (Render, Railway); never when the server faces the internet directly |
 
 ## API

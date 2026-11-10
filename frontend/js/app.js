@@ -128,6 +128,11 @@ async function logout() {
   try { localStorage.removeItem(CACHE_KEY); localStorage.removeItem('pk_user'); } catch (e) { /* ignore */ }
   closeAccount();
   closeDetail();
+  closeAlerts();
+  closeStatement();
+  closeBin();
+  ALERTS = []; CUSTOMERS = [];
+  $('alertBtn').hidden = true; $('alertCount').hidden = true;
   clearFormForNewEntry();
   loadRecs();
   renderAnalytics();
@@ -157,6 +162,8 @@ function applyUserToUI() {
   if (fixed) $('filterStation').style.display = 'none';
   $('eraseAllBtn').style.display = isAdmin ? '' : 'none';
   $('binBtn').style.display = isAdmin ? '' : 'none';
+  $('alertBtn').hidden = !canApprove();
+  $('ncLimit').disabled = !canApprove();
   updateLockState();
 }
 
@@ -330,6 +337,8 @@ async function purgeFromBin(id, date) {
 async function startSession() {
   applyUserToUI();
   await syncFromServer();
+  refreshAlerts();
+  loadCustomers();
   loadRecs();
   renderAnalytics();
   loadRecordForDateAndStation();
@@ -345,6 +354,8 @@ function openAccount() {
   $('usersSec').style.display = USER.role === 'admin' ? 'block' : 'none';
   ['pwCurrent','pwNew'].forEach(id => $(id).value = '');
   if (USER.role === 'admin') loadUsers();
+  $('alertSettingsSec').hidden = USER.role !== 'admin';
+  if (USER.role === 'admin') loadAlertSettings();
   $('accountOverlay').classList.add('open');
 }
 function closeAccount() { $('accountOverlay').classList.remove('open'); }
@@ -425,6 +436,8 @@ let INVOICES = []; // today's credit invoices (customer, car reg, phone, company
 let MISC_ITEMS = []; // today's itemised miscellaneous expenses (name, amount)
 let GAS_ITEMS = [];  // today's itemised gases & lubricants sales (name, category, qty, price)
 let DELIVERIES = []; // today's fuel deliveries (fuel, supplier, note, truck, ordered, received, dips)
+let ATTENDANTS = []; // today's cash per attendant (name, expected sales, cash, M-Pesa)
+let CUSTOMERS = [];  // credit accounts, for the invoice form
 
 // ── Main computation — mirrors C++ engine exactly ────────────────────────────
 function compute() {
@@ -695,9 +708,274 @@ function setStatus(s) {
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
+// ── Cash per attendant ────────────────────────────────────────────────────────
+function addAttendant() {
+  const name = sv('atName');
+  if (!name) { toast('⚠️ Enter the attendant\'s name', true); $('atName').focus(); return; }
+  ATTENDANTS.push({ id: Date.now(), name, expected: fv('atExpected'), cash: fv('atCash'), mpesa: fv('atMpesa') });
+  ['atName','atExpected','atCash','atMpesa'].forEach(id => $(id).value = '');
+  renderAttendants();
+  $('atName').focus();
+}
+
+function deleteAttendant(id) {
+  ATTENDANTS = ATTENDANTS.filter(a => a.id !== id);
+  renderAttendants();
+}
+
+function renderAttendants() {
+  const list = $('attendantsList');
+  if (!list) return;
+  let short = 0, over = 0;
+  list.innerHTML = ATTENDANTS.length ? ATTENDANTS.map(a => {
+    const diff = (a.cash || 0) + (a.mpesa || 0) - (a.expected || 0);
+    if (diff < 0) short -= diff; else over += diff;
+    const state = Math.abs(diff) < 1 ? '<b class="ok">Balanced</b>'
+      : diff < 0 ? `<b class="bad">Short KES ${fmt(-diff)}</b>` : `<b>Over KES ${fmt(diff)}</b>`;
+    return `<div class="item-row">
+      <span class="grow"><b>${esc(a.name)}</b><br><small>Sales KES ${fmt(a.expected)} · cash KES ${fmt(a.cash)} · M-Pesa KES ${fmt(a.mpesa)}</small></span>
+      <span>${state}</span>
+      <button class="btn btn-r btn-xs" onclick="deleteAttendant(${Number(a.id)})">✕</button>
+    </div>`;
+  }).join('') : '<div style="font-family:var(--mono);font-size:.74rem;color:var(--mut)">No attendants added for this day.</div>';
+  $('atCount').textContent = ATTENDANTS.length;
+  $('atShort').textContent = 'KES ' + fmt(short);
+  $('atOver').textContent = 'KES ' + fmt(over);
+  // Suggest names used on earlier days
+  const names = [...new Set(RECS.flatMap(r => (r.attendants || []).map(a => a.name)).filter(Boolean))].sort();
+  $('atNames').innerHTML = names.map(n => `<option value="${esc(n)}"></option>`).join('');
+}
+
+// ── Credit accounts ───────────────────────────────────────────────────────────
+async function loadCustomers() {
+  if (!USER || !ONLINE) return;
+  try { CUSTOMERS = (await api('GET', '/customers')).customers; } catch (e) { return; }
+  const sel = $('invAccount'), keep = sel.value;
+  sel.innerHTML = '<option value="">— No account (one-off) —</option>' + CUSTOMERS.map(c =>
+    `<option value="${Number(c.id)}">${esc(c.name)}${c.company ? ' · ' + esc(c.company) : ''}</option>`).join('');
+  sel.value = keep;
+}
+
+function pickInvoiceAccount() {
+  const c = CUSTOMERS.find(x => String(x.id) === sv('invAccount'));
+  if (!c) { $('invAccountNote').textContent = ''; return; }
+  $('invCustomer').value = c.name; $('invCompany').value = c.company || ''; $('invPhone').value = c.phone || '';
+  $('invAccountNote').textContent = `Balance KES ${fmt(c.balance)}` + (c.credit_limit ? ` of KES ${fmt(c.credit_limit)} limit` : ' · no limit set');
+}
+
+async function renderCreditPage() {
+  await loadCustomers();
+  const owed = CUSTOMERS.reduce((s, c) => s + Math.max(0, c.balance), 0);
+  $('creditTotals').textContent = `${CUSTOMERS.length} account${CUSTOMERS.length === 1 ? '' : 's'} · KES ${fmt(owed)} owed`;
+  $('customersBody').innerHTML = CUSTOMERS.length ? CUSTOMERS.map(c => `
+    <tr style="cursor:pointer" onclick="openStatement(${Number(c.id)})">
+      <td>${esc(c.name)}</td><td>${esc(c.company || '—')}</td><td>${esc(c.phone || '—')}</td>
+      <td class="num ${c.over_limit ? 'bad' : ''}">KES ${fmt(c.balance)}</td>
+      <td class="num">${c.credit_limit ? 'KES ' + fmt(c.credit_limit) : '—'}</td>
+      <td>${c.over_limit ? '<span class="badge br">Over limit</span>' : ''}</td>
+    </tr>`).join('')
+    : `<tr><td colspan="6" style="color:var(--mut)">${ONLINE ? 'No credit accounts yet — add one below.' : 'Credit accounts need an internet connection.'}</td></tr>`;
+}
+
+async function addCustomer() {
+  if (!requireOnline('add a credit account')) return;
+  try {
+    const { customer } = await api('POST', '/customers', { name: sv('ncName'), company: sv('ncCompany'),
+      phone: sv('ncPhone'), credit_limit: fv('ncLimit') });
+    ['ncName','ncCompany','ncPhone','ncLimit'].forEach(id => $(id).value = '');
+    toast('✅ Account added for ' + customer.name);
+    renderCreditPage();
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+let STATEMENT_ID = null;
+
+async function openStatement(id) {
+  STATEMENT_ID = id;
+  $('payDate').value = todayLocal(); $('payDate').max = todayLocal();
+  $('stBody').innerHTML = '<tr><td colspan="6">Loading…</td></tr>';
+  $('statementOverlay').classList.add('open');
+  try {
+    const { customer, entries } = await api('GET', '/customers/' + id + '/statement');
+    $('stName').textContent = customer.name;
+    $('stSub').textContent = [customer.company, customer.phone].filter(Boolean).join(' · ') +
+      ` — balance KES ${fmt(customer.balance)}` + (customer.credit_limit ? ` · limit KES ${fmt(customer.credit_limit)}` : '');
+    $('stLimitSec').hidden = !canApprove();
+    $('stLimit').value = customer.credit_limit || ''; $('stPhone').value = customer.phone || '';
+    const isAdmin = USER && USER.role === 'admin';
+    $('stBody').innerHTML = entries.length ? entries.map(e => `<tr>
+      <td>${esc(e.date)}</td>
+      <td class="num ${e.amount < 0 ? 'ok' : ''}">${e.amount < 0 ? '− ' : ''}KES ${fmt(Math.abs(e.amount))}</td>
+      <td class="num">KES ${fmt(e.balance)}</td>
+      <td>${e.type === 'invoice' ? '🧾 ' : '💵 '}${esc(e.detail || (e.type === 'invoice' ? 'Invoice' : 'Payment'))}</td>
+      <td>${esc(e.station || '—')}</td>
+      <td>${e.type === 'payment' && isAdmin ? `<button class="btn btn-r btn-xs" title="Void this payment" onclick="voidPayment(${Number(e.payment_id)})">✕</button>` : ''}</td>
+    </tr>`).join('') : '<tr><td colspan="6" style="color:var(--mut)">No invoices or payments yet.</td></tr>';
+  } catch (e) {
+    $('stBody').innerHTML = `<tr><td colspan="6" style="color:var(--red)">${esc(e.message)}</td></tr>`;
+  }
+}
+function closeStatement() { $('statementOverlay').classList.remove('open'); STATEMENT_ID = null; }
+
+async function recordPayment() {
+  if (!requireOnline('record a payment')) return;
+  try {
+    await api('POST', '/customers/' + STATEMENT_ID + '/payments', { amount: fv('payAmount'),
+      method: sv('payMethod'), reference: sv('payRef'), paid_on: sv('payDate'), station: sv('fStation') });
+    ['payAmount','payRef'].forEach(id => $(id).value = '');
+    toast('💵 Payment recorded');
+    openStatement(STATEMENT_ID);
+    renderCreditPage();
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+async function voidPayment(pid) {
+  const ok = await showConfirmModal('Void this payment?', 'It will no longer count towards the balance. The record of it is kept.');
+  if (!ok) return;
+  try {
+    await api('POST', '/payments/' + pid + '/void', {});
+    toast('Payment voided');
+    openStatement(STATEMENT_ID);
+    renderCreditPage();
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+async function saveCustomer() {
+  try {
+    await api('PUT', '/customers/' + STATEMENT_ID, { credit_limit: fv('stLimit'), phone: sv('stPhone') });
+    toast('✅ Account updated');
+    openStatement(STATEMENT_ID);
+    renderCreditPage();
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+// Print just the open pop-up (e.g. a customer statement)
+function printModal() {
+  document.body.classList.add('print-modal');
+  window.print();
+  setTimeout(() => document.body.classList.remove('print-modal'), 500);
+}
+
+// ── Alerts (managers and admins) ──────────────────────────────────────────────
+let ALERTS = [];
+
+async function refreshAlerts() {
+  if (!canApprove() || !ONLINE) return;
+  try {
+    const res = await api('GET', '/alerts');
+    ALERTS = res.alerts;
+    const badge = $('alertCount');
+    badge.textContent = res.unread > 99 ? '99+' : res.unread;
+    badge.hidden = !res.unread;
+    if (!$('alertsOverlay').classList.contains('open')) return;
+    renderAlerts();
+  } catch (e) { /* the bell just stays as it was */ }
+}
+
+function renderAlerts() {
+  $('alertsList').innerHTML = ALERTS.length ? ALERTS.map(a => `
+    <div class="alert-item ${a.read ? '' : 'unread'}" style="cursor:pointer" onclick="openAlertRecord(${Number(a.record_id)})">
+      <div><div class="alert-title">${esc(a.title)}</div>${esc(a.message)}
+        <div class="alert-meta">${esc(new Date(a.created_at).toLocaleString('en-KE'))}${a.emailed ? ' · emailed' : ''}</div></div>
+    </div>`).join('') : '<div class="m-row"><span>No open alerts. 👍</span></div>';
+}
+
+async function openAlerts() {
+  $('alertsOverlay').classList.add('open');
+  renderAlerts();
+  await refreshAlerts();
+  renderAlerts();
+}
+function closeAlerts() { $('alertsOverlay').classList.remove('open'); }
+
+async function markAlertsRead() {
+  try { await api('POST', '/alerts/read', { all: true }); } catch (e) { toast('⚠️ ' + e.message, true); return; }
+  await refreshAlerts();
+  renderAlerts();
+}
+
+function openAlertRecord(id) {
+  if (!RECS.some(r => Number(r.id) === id)) { toast('That day is no longer in the records', true); return; }
+  closeAlerts();
+  openDetail(null, id);
+}
+
+// Check for new alerts every two minutes while the app is open
+setInterval(() => { if (document.visibilityState === 'visible' && USER) refreshAlerts(); }, 120000);
+
+// ── Alert settings (admin, in the Account window) ────────────────────────────
+const ALERT_FIELDS = { asDip: 'dip_shortage_litres', asCash: 'cash_shortage_kes', asAttendant: 'attendant_shortage_kes',
+  asDelivery: 'short_delivery_litres', asLowPetrol: 'low_stock_petrol', asLowDiesel: 'low_stock_diesel', asLowKero: 'low_stock_kero' };
+
+async function loadAlertSettings() {
+  try {
+    const { settings, email_configured } = await api('GET', '/settings');
+    Object.entries(ALERT_FIELDS).forEach(([id, key]) => { $(id).value = settings[key]; });
+    $('asEmails').value = settings.alert_emails || '';
+    $('asEmailState').textContent = email_configured
+      ? '✉️ Email sending is set up on the server.'
+      : '✉️ Email sending is not set up on the server yet — alerts still show in the app (see README: PK_SMTP_*).';
+  } catch (e) { /* section stays empty */ }
+}
+
+async function saveAlertSettings() {
+  const body = { alert_emails: sv('asEmails') };
+  Object.entries(ALERT_FIELDS).forEach(([id, key]) => { body[key] = fv(id); });
+  try {
+    await api('PUT', '/settings', body);
+    toast('✅ Alert settings saved');
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+async function testAlertEmail() {
+  try {
+    const { sent_to } = await api('POST', '/settings/test-email', {});
+    toast('✉️ Test email sent to ' + sent_to.join(', '));
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+// ── Monthly report ────────────────────────────────────────────────────────────
+const REPORT_COLUMNS = ['days', 'approved_days', 'total_litres', 'gross_revenue', 'net_profit', 'total_expenses',
+  'total_tax', 'mpesa_amount', 'cash_amount', 'credit_amount', 'collection_variance', 'attendant_shortage_total',
+  'dip_variance_total', 'delivery_shortfall_litres', 'flagged_days'];
+
+async function renderReport() {
+  if (!$('repMonth').value) $('repMonth').value = todayLocal().slice(0, 7);
+  const month = $('repMonth').value;
+  $('repBody').innerHTML = '<tr><td>Loading…</td></tr>';
+  let rep;
+  try { rep = await api('GET', '/reports/monthly?month=' + month); }
+  catch (e) { $('repBody').innerHTML = `<tr><td>${esc(ONLINE ? e.message : 'Reports need an internet connection.')}</td></tr>`; return; }
+  const labels = Object.fromEntries(rep.fields.map(f => [f.key, f.label]));
+  Object.assign(labels, { days: 'Days recorded', approved_days: 'Days approved', flagged_days: 'Days flagged ⚠️' });
+  const t = rep.totals;
+  $('repCards').innerHTML = [
+    ['Total Sales', 'KES ' + fmt(t.gross_revenue), '#3ecf32'], ['Net Profit', 'KES ' + fmt(t.net_profit), '#b57bee'],
+    ['Litres Sold', fmt(t.total_litres) + ' L', '#5bb8e0'], ['Days Approved', `${t.approved_days} of ${t.days}`, '#f5c518'],
+  ].map(([l, v, col]) => `<div class="card" style="--c:${col}"><div class="card-lbl">${l}</div><div class="card-val">${esc(v)}</div></div>`).join('');
+  const cell = (row, k) => {
+    const v = row[k];
+    return ['days', 'approved_days', 'flagged_days'].includes(k) ? v : fmt(v);
+  };
+  $('repHead').innerHTML = '<tr><th>Branch</th>' + REPORT_COLUMNS.map(k => `<th>${esc(labels[k] || k)}</th>`).join('') + '</tr>';
+  $('repBody').innerHTML = rep.branches.length
+    ? rep.branches.map(b => '<tr><td>' + esc(b.station) + '</td>' + REPORT_COLUMNS.map(k => `<td class="num">${cell(b, k)}</td>`).join('') + '</tr>').join('')
+      + (rep.branches.length > 1 ? '<tr class="total"><td>All branches</td>' + REPORT_COLUMNS.map(k => `<td class="num">${cell(t, k)}</td>`).join('') + '</tr>' : '')
+    : `<tr><td colspan="${REPORT_COLUMNS.length + 1}" style="color:var(--mut)">No records saved for this month.</td></tr>`;
+  $('repDaily').innerHTML = rep.daily.map(d => `<tr><td>${esc(d.date)}</td><td>${esc(d.station)}</td>
+    <td class="num">${fmt(d.total_litres)}</td><td class="num">KES ${fmt(d.gross_revenue)}</td>
+    <td class="num ${d.net_profit < 0 ? 'bad' : ''}">KES ${fmt(d.net_profit)}</td>
+    <td>${d.approved ? '<span class="badge bg">✅ Approved</span>' : '<span class="badge by">Open</span>'}</td></tr>`).join('')
+    || '<tr><td colspan="6" style="color:var(--mut)">No days recorded.</td></tr>';
+}
+
+function downloadReportCSV() {
+  location.href = '/api/reports/monthly.csv?month=' + encodeURIComponent($('repMonth').value || todayLocal().slice(0, 7));
+}
+
 // ── Pages: the menu opens each section as its own page (#fuel, #pay …) ─────
 // The address hash keeps the browser / phone Back button working.
-const PAGES = ['fuel', 'pay', 'gas', 'dips', 'exp', 'kra', 'prices', 'ana', 'rec'];
+const PAGES = ['fuel', 'pay', 'gas', 'dips', 'exp', 'kra', 'prices', 'credit', 'report', 'ana', 'rec'];
 let openedFromMenu = false;
 
 function showPage(name) {
@@ -714,6 +992,9 @@ function showPage(name) {
     if (page === 'ana') renderAnalytics();
     if (page === 'rec') loadRecs();
     if (page === 'prices') renderPricesPage();
+    if (page === 'credit') renderCreditPage();
+    if (page === 'report') renderReport();
+    if (page === 'exp') loadCustomers();
   }
   window.scrollTo(0, 0);
 }
@@ -778,6 +1059,7 @@ function populateFormFromRecord(r) {
   GAS_ITEMS  = Array.isArray(r.gas_items)  ? JSON.parse(JSON.stringify(r.gas_items))  : [];
   INVOICES   = Array.isArray(r.invoices)   ? JSON.parse(JSON.stringify(r.invoices))   : [];
   DELIVERIES = Array.isArray(r.deliveries) ? JSON.parse(JSON.stringify(r.deliveries)) : [];
+  ATTENDANTS = Array.isArray(r.attendants) ? JSON.parse(JSON.stringify(r.attendants)) : [];
 
   // KRA fields
   setVal('kPin', r.kra_pin); setVal('kBiz', r.kra_business); setVal('kPeriod', r.kra_period);
@@ -798,6 +1080,7 @@ function populateFormFromRecord(r) {
   renderGasItems();
   renderInvoices();
   renderDeliveries();
+  renderAttendants();
   calc();
 }
 
@@ -807,6 +1090,8 @@ function clearFormForNewEntry() {
   document.querySelectorAll('input.owner-price').forEach(i => { i.readOnly = false; i.classList.remove('owner-price'); });
   DELIVERIES = [];
   renderDeliveries();
+  ATTENDANTS = [];
+  renderAttendants();
   document.querySelectorAll('input[type="number"]').forEach(i => { if (!i.readOnly) i.value = ''; });
   ['kPin','kBiz','kPeriod','kEtr','fMpesaTill','fMpesaRef','fCreditCust','kRemarks']
     .forEach(id => $(id) && ($(id).value = ''));
@@ -1080,6 +1365,7 @@ async function saveRec() {
     kra_remarks:     sv('kRemarks'),
     invoices:        JSON.parse(JSON.stringify(INVOICES)), // snapshot of today's credit invoices
     deliveries:      JSON.parse(JSON.stringify(DELIVERIES)),
+    attendants:      JSON.parse(JSON.stringify(ATTENDANTS)),
     kra_branch:      sv('kBranch'),
     float_amount:    fv('fFloat'),  banked_amount: fv('fBanked'),
     mpesa_till:      sv('fMpesaTill'), mpesa_ref: sv('fMpesaRef'),
@@ -1094,6 +1380,8 @@ async function saveRec() {
     const res = await api('POST', '/records', rec);
     toast((res.created ? '✅ Record saved — ' : '✅ Record updated — ') + rec.report_date + ' · ' + rec.station);
     await refreshRecs();
+    refreshAlerts();
+    loadCustomers();
   } catch (e) {
     toast('⚠️ Save failed: ' + e.message, true);
   }
@@ -1143,7 +1431,7 @@ async function eraseAllRecs() {
 }
 
 // ── Invoice / Credit Customer management ──────────────────────────────────────
-function addInvoice() {
+async function addInvoice() {
   const customer = sv('invCustomer');
   const company  = sv('invCompany');
   const carReg   = sv('invCarReg').toUpperCase();
@@ -1154,12 +1442,27 @@ function addInvoice() {
   if (!customer) { toast('⚠️ Enter customer name', true); return; }
   if (!amount || amount <= 0) { toast('⚠️ Enter a valid invoice amount', true); return; }
 
+  // Warn before taking a credit account over its limit
+  const account = CUSTOMERS.find(c => String(c.id) === sv('invAccount'));
+  if (account && account.credit_limit > 0) {
+    const savedToday = (currentRecord()?.invoices || []).filter(i => Number(i.customer_id) === account.id)
+      .reduce((s, i) => s + Number(i.amount || 0), 0);
+    const unsaved = INVOICES.filter(i => Number(i.customer_id) === account.id).reduce((s, i) => s + i.amount, 0);
+    const after = account.balance - savedToday + unsaved + amount;
+    if (after > account.credit_limit) {
+      const ok = await showConfirmModal('Over the credit limit',
+        `${account.name} would owe KES ${fmt(after)}, over their limit of KES ${fmt(account.credit_limit)}.\n\nAdd the invoice anyway?`);
+      if (!ok) return;
+    }
+  }
+
   const inv = {
     id: Date.now(),
     invoiceNo: 'INV-' + (sv('fDate') || todayLocal()).replace(/-/g,'') + '-' + String(INVOICES.length + 1).padStart(3,'0'),
     date: sv('fDate') || todayLocal(),
     station: sv('fStation'),
     customer, company, carReg, phone, fuelType, amount,
+    customer_id: account ? account.id : 0,
     created_at: new Date().toISOString()
   };
 
@@ -1168,7 +1471,8 @@ function addInvoice() {
   syncInvoicesToCredit();
 
   // Clear the form for next entry
-  ['invCustomer','invCompany','invCarReg','invPhone','invAmount'].forEach(id => { if($(id)) $(id).value=''; });
+  ['invCustomer','invCompany','invCarReg','invPhone','invAmount','invAccount'].forEach(id => { if($(id)) $(id).value=''; });
+  $('invAccountNote').textContent = '';
   toast('🧾 Invoice added for ' + customer);
 }
 
@@ -1885,6 +2189,8 @@ async function clearAll() {
   GAS_ITEMS = [];
   DELIVERIES = [];
   renderDeliveries();
+  ATTENDANTS = [];
+  renderAttendants();
   if ($('fCredit')) { $('fCredit').readOnly = false; $('fCredit').value = ''; }
   if ($('eMisc')) { $('eMisc').value = ''; }
   renderInvoices();
@@ -1970,6 +2276,7 @@ async function init() {
   renderMiscItems();
   renderGasItems();
   renderDeliveries();
+  renderAttendants();
   calc();
 
   // Who is signed in? Offline, fall back to the last signed-in user (read-only)

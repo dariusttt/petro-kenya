@@ -15,6 +15,8 @@ Environment
     PK_DB                 SQLite file (default backend/petrokenya.sqlite3)
     PK_ADMIN_USER/PK_ADMIN_PASSWORD   create this admin on first start if no users exist
     PK_SECURE_COOKIE=1    force the Secure cookie flag (auto-on behind HTTPS proxies)
+    PK_SMTP_HOST, PK_SMTP_PORT, PK_SMTP_USER, PK_SMTP_PASSWORD, PK_SMTP_FROM
+                          mail account for alert emails (recipients are set in the app)
     PK_TRUST_PROXY=1      read the visitor's address from X-Forwarded-For; set ONLY behind
                           a proxy you control (e.g. Render), never when serving directly
 
@@ -31,6 +33,12 @@ API (all JSON; everything except /api/health and /api/login needs a signed-in se
     POST   /api/records/<id>/reopen      (admin)
     GET    /api/records/previous?station=&date=     latest saved day before a date
     GET    /api/prices?station=&date=    POST /api/prices (admin)   GET /api/prices/history
+    GET|POST /api/customers   PUT /api/customers/<id> (manager, admin)
+    GET    /api/customers/<id>/statement  POST /api/customers/<id>/payments
+    POST   /api/payments/<id>/void       (admin)
+    GET    /api/alerts?all=1             POST /api/alerts/read {ids|all}   (manager, admin)
+    GET|PUT /api/settings   POST /api/settings/test-email   (admin)
+    GET    /api/reports/monthly?month=YYYY-MM&station=   (.csv for a download)
     GET    /api/analytics?station=       GET /api/export.csv?station=
     GET|POST /api/users   DELETE /api/users/<id>   POST /api/users/<id>/password   (admin)
 
@@ -60,6 +68,8 @@ from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
+
+import business
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.realpath(os.path.join(BACKEND_DIR, "..", "frontend"))
@@ -113,7 +123,7 @@ TEXT_FIELDS = [
     "kra_pin", "kra_business", "kra_period", "kra_branch", "kra_etr",
     "kra_return_type", "kra_remarks",
 ]
-LIST_FIELDS = ["misc_items", "gas_items", "invoices", "deliveries"]
+LIST_FIELDS = ["misc_items", "gas_items", "invoices", "deliveries", "attendants"]
 FUELS = ("petrol", "diesel", "kero")
 
 CSV_COLS = [
@@ -189,6 +199,9 @@ def compute(raw):
     deliveries = raw.get("deliveries") or []
     delivery_short = r2(sum(max(0.0, num(d.get("litres_ordered")) - num(d.get("litres_received")))
                             for d in deliveries))
+    # Cash per attendant: what each handed in (cash + M-Pesa) against their pumps' sales
+    attendants = raw.get("attendants") or []
+    att_gap = [num(a.get("expected")) - num(a.get("cash")) - num(a.get("mpesa")) for a in attendants]
 
     pump = {}
     for prefix, rev in (("petrol", pRev), ("diesel", dRev), ("kero", kRev)):
@@ -247,6 +260,8 @@ def compute(raw):
         "road_levy_petrol": r2(pL * RL_P), "road_levy_diesel": r2(dL * RL_D),
         "total_tax": r2(outputVAT + totalExcise),
         "delivery_shortfall_litres": delivery_short,
+        "attendant_shortage_total": r2(sum(g for g in att_gap if g > 0)),
+        "attendant_excess_total": r2(-sum(g for g in att_gap if g < 0)),
     }
 
 
@@ -310,8 +325,9 @@ def opening_mismatches(rec, previous):
 
 
 # Item fields that must be numbers; everything else in an item is kept as short text
-ITEM_NUM_FIELDS = {"id", "qty", "price", "amount",
-                   "litres_ordered", "litres_received", "dip_before", "dip_after"}
+ITEM_NUM_FIELDS = {"id", "qty", "price", "amount", "customer_id",
+                   "litres_ordered", "litres_received", "dip_before", "dip_after",
+                   "expected", "cash", "mpesa"}
 
 
 def clean_item(item):
@@ -889,6 +905,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "PetroKenya/2.0"
     store = None  # set in make_server()
     auth = None
+    settings = mailer = alerts = credit = None
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
@@ -1050,7 +1067,7 @@ class Handler(BaseHTTPRequestHandler):
             if not user:
                 raise ApiError(HTTPStatus.UNAUTHORIZED, "Please sign in")
             return self._route(m, path, q, user)
-        except ApiError as e:
+        except (ApiError, business.Error) as e:
             self._json(e.status, {"error": e.message})
         except Exception as e:  # pragma: no cover - last-resort guard
             self.log_message("Unhandled error: %r", e)
@@ -1105,12 +1122,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._check_editable(user, rec["report_date"], existing)
                 self._prepare_record(rec, existing, user)
                 saved, created = self.store.save(rec, by=user["username"])
+                self.alerts.sync_record(saved, now_iso())
                 return self._json(HTTPStatus.CREATED if created else HTTPStatus.OK,
                                   {"created": created, "record": saved})
             if m == "DELETE":
                 self._require_admin(user)
-                return self._json(HTTPStatus.OK, {"deleted": self.store.delete_all(
-                    q.get("station"), by=user["username"])})
+                binned = self.store.list(station=q.get("station"))
+                count = self.store.delete_all(q.get("station"), by=user["username"])
+                for r in binned:
+                    self.alerts.clear_record(r["id"], now_iso())
+                return self._json(HTTPStatus.OK, {"deleted": count})
 
         mm = re.fullmatch(r"/api/records/(\d+)", path)
         if mm:
@@ -1125,11 +1146,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._check_editable(user, rec["report_date"])
                 self._prepare_record(rec, existing, user)
                 saved, _ = self.store.save(rec, rec_id=rec_id, by=user["username"])
+                self.alerts.sync_record(saved, now_iso())
                 return self._json(HTTPStatus.OK, {"created": False, "record": saved})
             if m == "DELETE":
                 existing = self._own_record(user, rec_id)
                 self._check_editable(user, existing["report_date"], existing)
                 self.store.delete(rec_id, by=user["username"])
+                self.alerts.clear_record(rec_id, now_iso())
                 return self._json(HTTPStatus.OK, {"deleted": 1})
 
         # ── Day approval: managers (own branch) and admins approve; only admins reopen ──
@@ -1213,11 +1236,100 @@ class Handler(BaseHTTPRequestHandler):
             if mm.group(2) and m == "POST":
                 if not self.store.restore(rec_id, by=user["username"]):
                     raise ApiError(HTTPStatus.NOT_FOUND, "That record is not in the bin")
+                self.alerts.sync_record(self.store.get(rec_id), now_iso())
                 return self._json(HTTPStatus.OK, {"record": self.store.get(rec_id)})
             if not mm.group(2) and m == "DELETE":
                 if not self.store.purge(rec_id, by=user["username"]):
                     raise ApiError(HTTPStatus.NOT_FOUND, "That record is not in the bin")
                 return self._json(HTTPStatus.OK, {"purged": 1})
+
+        # ── Credit customer accounts ──
+        if path == "/api/customers":
+            if m == "GET":
+                return self._json(HTTPStatus.OK, {"customers": self.credit.list()})
+            if m == "POST":
+                cust = self.credit.create(self._body(), user["username"], now_iso(),
+                                          can_set_limit=user["role"] in ("manager", "admin"))
+                return self._json(HTTPStatus.CREATED, {"customer": cust})
+        mm = re.fullmatch(r"/api/customers/(\d+)(/statement|/payments)?", path)
+        if mm:
+            cid = int(mm.group(1))
+            if not mm.group(2) and m == "PUT":
+                if user["role"] not in ("manager", "admin"):
+                    raise ApiError(HTTPStatus.FORBIDDEN, "Only a manager or admin can change a customer account")
+                return self._json(HTTPStatus.OK, {"customer": self.credit.update(cid, self._body())})
+            if mm.group(2) == "/statement" and m == "GET":
+                return self._json(HTTPStatus.OK, self.credit.statement(cid))
+            if mm.group(2) == "/payments" and m == "POST":
+                body = self._body()
+                station = self._station_scope(user, body.get("station") or None) or body.get("station") or ""
+                if station and station not in STATIONS:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "Unknown station")
+                pid = self.credit.add_payment(cid, body, user["username"], station, now_iso(), today())
+                return self._json(HTTPStatus.CREATED, {"payment_id": pid, **self.credit.statement(cid)})
+        mm = re.fullmatch(r"/api/payments/(\d+)/void", path)
+        if mm and m == "POST":
+            self._require_admin(user)
+            self.credit.void_payment(int(mm.group(1)), user["username"], now_iso())
+            return self._json(HTTPStatus.OK, {"ok": True})
+
+        # ── Alerts: admins see every branch, managers their own ──
+        if path in ("/api/alerts", "/api/alerts/read"):
+            if user["role"] not in ("manager", "admin"):
+                raise ApiError(HTTPStatus.FORBIDDEN, "Alerts are for managers and admins")
+            station = user["station"] if user["role"] == "manager" else q.get("station")
+            if path == "/api/alerts" and m == "GET":
+                items = self.alerts.list(user, station, include_cleared=q.get("all") == "1")
+                return self._json(HTTPStatus.OK, {"alerts": items,
+                                                  "unread": sum(1 for a in items if not a["read"] and not a["cleared_at"])})
+            if path == "/api/alerts/read" and m == "POST":
+                body = self._body()
+                visible = {a["id"] for a in self.alerts.list(user, station, include_cleared=True, limit=5000)}
+                ids = visible if body.get("all") else {int(num(i)) for i in body.get("ids") or []} & visible
+                self.alerts.mark_read(user, ids)
+                return self._json(HTTPStatus.OK, {"marked": len(ids)})
+
+        # ── Alert settings (admin) ──
+        if path == "/api/settings":
+            self._require_admin(user)
+            if m == "GET":
+                return self._json(HTTPStatus.OK, {"settings": self.settings.all(),
+                                                  "email_configured": self.mailer.configured})
+            if m == "PUT":
+                return self._json(HTTPStatus.OK, {"settings": self.settings.update(self._body()),
+                                                  "email_configured": self.mailer.configured})
+        if path == "/api/settings/test-email" and m == "POST":
+            self._require_admin(user)
+            to = [e.strip() for e in self.settings.all()["alert_emails"].split(",") if e.strip()]
+            if not self.mailer.configured:
+                raise ApiError(HTTPStatus.BAD_REQUEST, "Email isn't set up on the server (PK_SMTP_HOST and friends)")
+            if not to:
+                raise ApiError(HTTPStatus.BAD_REQUEST, "Add at least one alert email address first")
+            try:
+                self.mailer.send_now(to, "PetroKenya test alert", "Alert emails from PetroKenya are working.\n")
+            except Exception as e:
+                raise ApiError(HTTPStatus.BAD_GATEWAY, "The mail server refused: %s" % e)
+            return self._json(HTTPStatus.OK, {"sent_to": to})
+
+        # ── Monthly report ──
+        if path in ("/api/reports/monthly", "/api/reports/monthly.csv") and m == "GET":
+            month = q.get("month") or today()[:7]
+            if not re.fullmatch(r"\d{4}-\d{2}", month):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "month must look like 2026-10")
+            station = self._station_scope(user, q.get("station"))
+            recs = self.store.list(station, date_from=month + "-01", date_to=month + "-31")
+            report = business.monthly_report(recs, month)
+            if path.endswith(".csv"):
+                buf = io.StringIO()
+                w = csv.writer(buf, lineterminator="\n")
+                w.writerow(["Branch", "Days", "Approved days"] + [f["label"] for f in report["fields"]])
+                for b in report["branches"] + [report["totals"]]:
+                    w.writerow([csv_cell(b["station"]), b["days"], b["approved_days"]]
+                               + [b[f["key"]] for f in report["fields"]])
+                return self._send(HTTPStatus.OK, buf.getvalue().encode("utf-8"), "text/csv; charset=utf-8",
+                                  {"Content-Disposition": 'attachment; filename="PetroKenya_%s_%s.csv"'
+                                   % ((station or "All-Branches").replace(" ", "-"), month)})
+            return self._json(HTTPStatus.OK, report)
 
         if path == "/api/users":
             self._require_admin(user)
@@ -1296,7 +1408,11 @@ def make_server(host=HOST, port=PORT, db_path=DB_PATH, bootstrap=True):
     auth = Auth(store)
     if bootstrap:
         bootstrap_admin(auth)
-    handler = type("BoundHandler", (Handler,), {"store": store, "auth": auth})
+    settings = business.Settings(store)
+    mailer = business.Mailer()
+    handler = type("BoundHandler", (Handler,), {
+        "store": store, "auth": auth, "settings": settings, "mailer": mailer,
+        "alerts": business.Alerts(store, settings, mailer), "credit": business.Credit(store)})
     return ThreadingHTTPServer((host, port), handler)
 
 

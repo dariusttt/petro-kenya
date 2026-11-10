@@ -88,7 +88,8 @@ class ServerCase(unittest.TestCase):
         self.httpd.RequestHandlerClass.auth.fails.clear()
         self.httpd.RequestHandlerClass.auth.account_fails.clear()
         conn = self.httpd.RequestHandlerClass.store.conn
-        for table in ("records", "record_versions", "prices"):
+        for table in ("records", "record_versions", "prices", "alerts", "alert_reads", "customers",
+                      "credit_payments", "settings"):
             conn.execute("DELETE FROM %s" % table)
         conn.commit()
         self.admin = Client(self.base).login("boss")
@@ -508,6 +509,135 @@ class WorkflowTest(ServerCase):
             self.assertEqual(auth.get(7)["display_name"], "Mary W")
             self.assertEqual(auth.create("boss2", "Mango-Tree-42", "manager", "Kisumu Branch")["role"], "manager")
             store.conn.close()
+
+
+class FakeMailer:
+    configured = True
+
+    def __init__(self):
+        self.sent = []
+
+    def send(self, to, subject, body):
+        if to:
+            self.sent.append((to, subject, body))
+        return bool(to)
+
+    def send_now(self, to, subject, body):
+        self.send(to, subject, body)
+
+
+class BusinessTest(ServerCase):
+    """Cash per attendant, alerts, credit accounts and the monthly report."""
+
+    def setUp(self):
+        super().setUp()
+        self.mail = FakeMailer()
+        handler = self.httpd.RequestHandlerClass
+        handler.mailer = self.mail
+        handler.alerts.mailer = self.mail
+
+    def test_attendant_shortages_are_totalled(self):
+        body = {**SAMPLE, "attendants": [
+            {"name": "Otieno", "expected": 10000, "cash": 4000, "mpesa": 5200},   # short 800
+            {"name": "Wanjiru", "expected": 8000, "cash": 3000, "mpesa": 5100}]}  # over 100
+        rec = self.admin.req("POST", "/api/records", body)[1]["record"]
+        self.assertEqual((rec["attendant_shortage_total"], rec["attendant_excess_total"]), (800, 100))
+
+    def test_alerts_are_raised_scoped_emailed_and_cleared(self):
+        self.admin.req("PUT", "/api/settings", {"alert_emails": "owner@example.com, boss@example.com"})
+        bad = {**SAMPLE, "station": "Kisumu Branch", "petrol_dip_open": 5000, "petrol_dip_close": 2000,
+               "cash_amount": 0, "attendants": [{"name": "Otieno", "expected": 9000, "cash": 1000}]}
+        rid = self.admin.req("POST", "/api/records", bad)[1]["record"]["id"]
+        self.admin.req("POST", "/api/records", {**SAMPLE, "cash_amount": 0})          # Westlands: cash short
+        alerts = self.admin.req("GET", "/api/alerts")[1]
+        kinds = sorted((a["station"][:7], a["kind"]) for a in alerts["alerts"])
+        self.assertEqual(kinds, [("Kisumu ", "attendant_shortage"), ("Kisumu ", "cash_shortage"),
+                                 ("Kisumu ", "dip_shortage"), ("Kisumu ", "low_stock"),
+                                 ("Westlan", "cash_shortage")])
+        self.assertEqual(alerts["unread"], 5)
+        self.assertEqual(len(self.mail.sent), 2)                                     # one email per save
+        self.assertEqual(self.mail.sent[0][0], ["owner@example.com", "boss@example.com"])
+        self.assertIn("Kisumu Branch", self.mail.sent[0][1])
+
+        mgr = Client(self.base).login("kmanager")
+        self.assertEqual({a["station"] for a in mgr.req("GET", "/api/alerts")[1]["alerts"]}, {"Kisumu Branch"})
+        self.assertEqual(Client(self.base).login("kisumu").req("GET", "/api/alerts")[0], 403)
+        self.assertEqual(mgr.req("POST", "/api/alerts/read", {"all": True})[1]["marked"], 4)
+        self.assertEqual(mgr.req("GET", "/api/alerts")[1]["unread"], 0)
+        self.assertEqual(self.admin.req("GET", "/api/alerts")[1]["unread"], 5)      # read is per person
+
+        fixed = {**bad, "petrol_dip_close": 4900, "cash_amount": 9550, "attendants": []}   # sales fully collected
+        self.admin.req("POST", "/api/records", fixed)                                # same day, corrected
+        left = [a["kind"] for a in self.admin.req("GET", "/api/alerts")[1]["alerts"] if a["record_id"] == rid]
+        self.assertEqual(left, [])
+        self.assertEqual(len(self.mail.sent), 2)                                     # clearing sends nothing
+        everything = self.admin.req("GET", "/api/alerts?all=1")[1]["alerts"]
+        self.assertTrue(all(a["cleared_at"] for a in everything if a["record_id"] == rid))
+
+    def test_alert_settings_are_admin_only_and_validated(self):
+        self.assertEqual(Client(self.base).login("kmanager").req("GET", "/api/settings")[0], 403)
+        self.assertEqual(self.admin.req("PUT", "/api/settings", {"alert_emails": "not an email"})[0], 400)
+        self.assertEqual(self.admin.req("PUT", "/api/settings", {"low_stock_kero": -5})[0], 400)
+        res = self.admin.req("PUT", "/api/settings", {"low_stock_kero": 500, "unknown": 1})[1]
+        self.assertEqual(res["settings"]["low_stock_kero"], 500)
+        rec = {**SAMPLE, "kero_dip_open": 900, "kero_dip_close": 800}
+        self.admin.req("POST", "/api/records", rec)
+        self.assertEqual([a for a in self.admin.req("GET", "/api/alerts")[1]["alerts"] if a["kind"] == "low_stock"], [])
+        self.assertEqual(self.admin.req("POST", "/api/settings/test-email", {})[0], 400)  # no addresses yet
+
+    def test_credit_accounts_balance_from_invoices_and_payments(self):
+        staff = Client(self.base).login("kisumu")
+        cust = staff.req("POST", "/api/customers", {"name": "Peter Otieno", "company": "Matatu Sacco",
+                                                   "credit_limit": 50000})[1]["customer"]
+        self.assertEqual(cust["credit_limit"], 0)                       # staff can't set a limit
+        self.assertEqual(staff.req("PUT", "/api/customers/%d" % cust["id"], {"credit_limit": 1})[0], 403)
+        self.assertEqual(self.admin.req("PUT", "/api/customers/%d" % cust["id"],
+                                        {"credit_limit": 15000})[1]["customer"]["credit_limit"], 15000)
+        self.assertEqual(staff.req("POST", "/api/customers", {"name": "  "})[0], 400)
+        inv = lambda amt, no: {"customer": "Peter Otieno", "customer_id": cust["id"], "amount": amt,
+                               "invoiceNo": no, "fuelType": "Diesel", "carReg": "KDA 123X"}
+        day1 = {**SAMPLE, "station": "Kisumu Branch", "report_date": "2026-10-14", "invoices": [inv(9000, "INV-1")]}
+        day2 = {**day1, "report_date": "2026-10-15", "invoices": [inv(8000, "INV-2"), {"customer": "walk-in", "amount": 50}]}
+        staff.req("POST", "/api/records", day1)
+        rid2 = staff.req("POST", "/api/records", day2)[1]["record"]["id"]
+        c = [x for x in staff.req("GET", "/api/customers")[1]["customers"] if x["id"] == cust["id"]][0]
+        self.assertEqual((c["invoiced"], c["balance"], c["over_limit"]), (17000, 17000, True))
+
+        self.assertEqual(staff.req("POST", "/api/customers/%d/payments" % cust["id"], {"amount": 0})[0], 400)
+        self.assertEqual(staff.req("POST", "/api/customers/%d/payments" % cust["id"],
+                                   {"amount": 1, "paid_on": "2026-12-01"})[0], 400)   # future date
+        res = staff.req("POST", "/api/customers/%d/payments" % cust["id"],
+                        {"amount": 10000, "method": "M-Pesa", "reference": "RGK7ABC", "paid_on": "2026-10-15"})[1]
+        self.assertEqual(res["customer"]["balance"], 7000)
+        self.assertEqual([(e["type"], e["balance"]) for e in res["entries"]],
+                         [("invoice", 9000), ("invoice", 17000), ("payment", 7000)])
+        pid = res["payment_id"]
+        self.assertEqual(staff.req("POST", "/api/payments/%d/void" % pid, {})[0], 403)
+        self.assertEqual(self.admin.req("POST", "/api/payments/%d/void" % pid, {})[0], 200)
+        self.admin.req("DELETE", "/api/records/%d" % rid2)                      # binned day's invoice drops out
+        stmt = self.admin.req("GET", "/api/customers/%d/statement" % cust["id"])[1]
+        self.assertEqual((stmt["customer"]["balance"], len(stmt["entries"])), (9000, 1))
+        self.assertEqual(self.admin.req("GET", "/api/customers/999/statement")[0], 404)
+
+    def test_monthly_report(self):
+        self.admin.req("POST", "/api/records", {**SAMPLE, "report_date": "2026-10-01"})
+        self.admin.req("POST", "/api/records", SAMPLE)
+        k = self.admin.req("POST", "/api/records", {**SAMPLE, "station": "Kisumu Branch"})[1]["record"]["id"]
+        self.admin.req("POST", "/api/records", {**SAMPLE, "report_date": "2026-09-30"})   # other month
+        Client(self.base).login("kmanager").req("POST", "/api/records/%d/approve" % k, {})
+        rep = self.admin.req("GET", "/api/reports/monthly?month=2026-10")[1]
+        by = {b["station"]: b for b in rep["branches"]}
+        self.assertEqual((by["Westlands Branch"]["days"], by["Kisumu Branch"]["approved_days"]), (2, 1))
+        self.assertEqual(by["Westlands Branch"]["petrol_litres"], 200)
+        self.assertEqual(rep["totals"]["days"], 3)
+        self.assertEqual(rep["totals"]["net_profit"], 3 * 3100)
+        mgr = Client(self.base).login("kmanager").req("GET", "/api/reports/monthly?month=2026-10")[1]
+        self.assertEqual([b["station"] for b in mgr["branches"]], ["Kisumu Branch"])
+        self.assertEqual(self.admin.req("GET", "/api/reports/monthly?month=Oct")[0], 400)
+        status, csv_text, headers = self.admin.req("GET", "/api/reports/monthly.csv?month=2026-10")
+        self.assertEqual(status, 200)
+        self.assertIn("attachment", headers["Content-Disposition"])
+        self.assertEqual(len(csv_text.strip().splitlines()), 4)     # header, 2 branches, totals
 
 
 class BootstrapTest(unittest.TestCase):

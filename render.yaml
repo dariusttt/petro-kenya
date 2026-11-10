@@ -21,6 +21,12 @@ services:
         value: admin
       - key: PK_ADMIN_PASSWORD
         sync: false   # Render asks you to type this in when you create the service
+      - key: PK_SMTP_HOST        # optional: alert emails (e.g. smtp.gmail.com)
+        sync: false
+      - key: PK_SMTP_USER
+        sync: false
+      - key: PK_SMTP_PASSWORD    # an app password, kept secret by Render
+        sync: false
     disk:
       name: data
       mountPath: /var/data

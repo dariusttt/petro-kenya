@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PetroKenya">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/styles.css?v=7">
+<link rel="stylesheet" href="css/styles.css?v=8">
 </head>
 <body>
 
@@ -41,6 +41,7 @@
       <div id="hDate"></div>
     </div>
     <button class="btn btn-o btn-sm" id="installBtn" style="display:none" onclick="installApp()">📲 Install</button>
+    <button class="btn btn-o btn-sm bell" id="alertBtn" hidden onclick="openAlerts()" aria-label="Alerts">🔔<span class="bell-count" id="alertCount" hidden></span></button>
     <button class="btn btn-b btn-sm" id="userBtn" onclick="openAccount()">👤 Sign in</button>
   </div>
 </header>
@@ -143,6 +144,8 @@
     <button class="tab-btn" onclick="tab('exp',this)"><span class="tab-name">📋 Expenses</span><span class="tab-desc">Daily costs and credit customer invoices</span></button>
     <button class="tab-btn" onclick="tab('kra',this)"><span class="tab-name">🇰🇪 KRA Filing</span><span class="tab-desc">VAT, excise and road levy for the day</span></button>
     <button class="tab-btn" onclick="tab('prices',this)"><span class="tab-name">💲 Fuel Prices</span><span class="tab-desc">Selling and cost prices set by the owner</span></button>
+    <button class="tab-btn" onclick="tab('credit',this)"><span class="tab-name">🧾 Credit Accounts</span><span class="tab-desc">Customer balances, payments and statements</span></button>
+    <button class="tab-btn" onclick="tab('report',this)"><span class="tab-name">📈 Monthly Report</span><span class="tab-desc">Month totals per branch, side by side</span></button>
     <button class="tab-btn" onclick="tab('ana',this)"><span class="tab-name">📊 Analytics</span><span class="tab-desc">Last 7 days and all-time totals</span></button>
     <button class="tab-btn" onclick="tab('rec',this)"><span class="tab-name">🗂️ Records</span><span class="tab-desc">Saved days for every branch</span></button>
   </div>
@@ -327,6 +330,26 @@
           <div class="ig" style="grid-column:1/-1"><label>Account / Customer Name</label>
             <input type="text" id="fCreditCust" placeholder="e.g. Nairobi Bus Services Ltd"></div>
         </div>
+      </div>
+    </div>
+    <div class="box" style="margin-bottom:16px">
+      <div class="box-title">👷 Cash per Attendant
+        <span style="margin-left:auto;font-family:var(--mono);font-size:.68rem;color:var(--mut)">Sales from their pumps vs. money handed in</span>
+      </div>
+      <div id="attendantsList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px"></div>
+      <div class="g4">
+        <div class="ig"><label for="atName">Attendant</label>
+          <input type="text" id="atName" list="atNames" placeholder="e.g. Brian Otieno" autocomplete="off">
+          <datalist id="atNames"></datalist></div>
+        <div class="ig"><label for="atExpected">Sales on Their Pumps (KES)</label><input type="number" id="atExpected" step="0.01" placeholder="0.00"></div>
+        <div class="ig"><label for="atCash">Cash Handed In (KES)</label><input type="number" id="atCash" step="0.01" placeholder="0.00"></div>
+        <div class="ig"><label for="atMpesa">M-Pesa to Till (KES)</label><input type="number" id="atMpesa" step="0.01" placeholder="0.00"></div>
+      </div>
+      <div class="actions" style="margin-top:12px"><button class="btn btn-g" onclick="addAttendant()">＋ Add Attendant</button></div>
+      <div class="fuel-total" style="margin-top:12px">
+        <span>Attendants: <b id="atCount">0</b></span>
+        <span>Total short: <b id="atShort" class="bad">KES 0</b></span>
+        <span>Total over: <b id="atOver">KES 0</b></span>
       </div>
     </div>
     <div style="background:var(--s1);border:1px solid var(--brd);border-radius:9px;padding:14px 18px;font-family:var(--mono);font-size:.78rem;display:flex;gap:24px;flex-wrap:wrap">
@@ -567,6 +590,8 @@
     <div class="box">
       <div class="box-title">🧾 New Invoice Entry</div>
       <div class="g3" style="margin-bottom:10px">
+        <div class="ig"><label for="invAccount">Credit Account</label>
+          <select id="invAccount" onchange="pickInvoiceAccount()"><option value="">— No account (one-off) —</option></select></div>
         <div class="ig"><label>Customer Name</label>
           <input type="text" id="invCustomer" placeholder="e.g. John Mwangi"></div>
         <div class="ig"><label>Company Name</label>
@@ -586,6 +611,7 @@
       </div>
       <div class="actions" style="margin-top:0">
         <button class="btn btn-g" onclick="addInvoice()">➕ Add Invoice</button>
+        <span id="invAccountNote" class="m-sub" style="margin:0;align-self:center"></span>
       </div>
     </div>
 
@@ -726,6 +752,53 @@
       <div class="tbl-wrap"><table>
         <thead><tr><th>From</th><th>Branch</th><th>Fuel</th><th>Selling</th><th>Cost</th><th>Set by</th></tr></thead>
         <tbody id="priceHistory"></tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <!-- ══ PANEL: CREDIT ACCOUNTS ══ -->
+  <div class="panel" id="p-credit">
+    <div class="box" style="margin-bottom:14px">
+      <div class="box-title">🧾 Credit Accounts <span class="price-tag" id="creditTotals">—</span></div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Customer</th><th>Company</th><th>Phone</th><th>Balance</th><th>Limit</th><th></th></tr></thead>
+        <tbody id="customersBody"></tbody>
+      </table></div>
+    </div>
+    <div class="box">
+      <div class="box-title">➕ New Credit Account</div>
+      <div class="g4">
+        <div class="ig"><label for="ncName">Customer Name</label><input type="text" id="ncName" placeholder="e.g. Peter Otieno"></div>
+        <div class="ig"><label for="ncCompany">Company</label><input type="text" id="ncCompany" placeholder="e.g. Matatu Sacco Ltd"></div>
+        <div class="ig"><label for="ncPhone">Phone</label><input type="text" id="ncPhone" placeholder="e.g. 0722 000 000"></div>
+        <div class="ig"><label for="ncLimit">Credit Limit (KES)</label><input type="number" id="ncLimit" step="100" placeholder="managers & admins set this"></div>
+      </div>
+      <div class="actions"><button class="btn btn-g" onclick="addCustomer()">➕ Add Account</button></div>
+    </div>
+  </div>
+
+  <!-- ══ PANEL: MONTHLY REPORT ══ -->
+  <div class="panel" id="p-report">
+    <div class="box report-controls" style="margin-bottom:14px">
+      <div class="ig" style="max-width:200px"><label for="repMonth">Month</label>
+        <input type="month" id="repMonth" onchange="renderReport()"></div>
+      <div class="actions" style="margin-top:0">
+        <button class="btn btn-o" onclick="window.print()">🖨️ Print / PDF</button>
+        <button class="btn btn-b" onclick="downloadReportCSV()">📥 Download for Excel</button>
+      </div>
+    </div>
+    <div class="cards" id="repCards"></div>
+    <div class="box" style="margin-bottom:14px">
+      <div class="box-title">Branches Side by Side</div>
+      <div class="tbl-wrap"><table class="report-table">
+        <thead id="repHead"></thead><tbody id="repBody"></tbody>
+      </table></div>
+    </div>
+    <div class="box">
+      <div class="box-title">Day by Day</div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Date</th><th>Branch</th><th>Litres</th><th>Sales</th><th>Profit</th><th>Status</th></tr></thead>
+        <tbody id="repDaily"></tbody>
       </table></div>
     </div>
   </div>
@@ -1053,10 +1126,81 @@
       </div>
     </div>
 
+    <div class="m-sec" id="alertSettingsSec" hidden>
+      <div class="m-sec-ttl">Alert Settings (Admin)</div>
+      <div class="g2" style="gap:10px">
+        <div class="ig" style="grid-column:1/-1"><label for="asEmails">Email alerts to (comma-separated)</label>
+          <input type="text" id="asEmails" placeholder="owner@example.com, manager@example.com"></div>
+        <div class="ig"><label for="asDip">Tank short by more than (L)</label><input type="number" id="asDip"></div>
+        <div class="ig"><label for="asCash">Cash short by more than (KES)</label><input type="number" id="asCash"></div>
+        <div class="ig"><label for="asAttendant">Attendant short by more than (KES)</label><input type="number" id="asAttendant"></div>
+        <div class="ig"><label for="asDelivery">Delivery short by more than (L)</label><input type="number" id="asDelivery"></div>
+        <div class="ig"><label for="asLowPetrol">Low petrol below (L)</label><input type="number" id="asLowPetrol"></div>
+        <div class="ig"><label for="asLowDiesel">Low diesel below (L)</label><input type="number" id="asLowDiesel"></div>
+        <div class="ig"><label for="asLowKero">Low kerosene below (L)</label><input type="number" id="asLowKero"></div>
+      </div>
+      <div class="m-sub" id="asEmailState" style="margin:10px 0 0"></div>
+      <div class="actions" style="margin-top:10px">
+        <button class="btn btn-g btn-sm" onclick="saveAlertSettings()">💾 Save Alert Settings</button>
+        <button class="btn btn-o btn-sm" onclick="testAlertEmail()">✉️ Send Test Email</button>
+      </div>
+    </div>
+
     <div class="m-foot">
       <button class="btn btn-o" onclick="logoutOtherDevices()">Sign out other devices</button>
       <button class="btn btn-r" onclick="logout()">⎋ Sign out</button>
       <button class="btn btn-o" onclick="closeAccount()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ ALERTS ══ -->
+<div class="overlay" id="alertsOverlay">
+  <div class="modal" style="max-width:640px">
+    <div class="m-title">🔔 Alerts</div>
+    <div class="m-sub">Raised automatically when a saved day shows a problem. They clear themselves when the day is corrected.</div>
+    <div id="alertsList"></div>
+    <div class="m-foot">
+      <button class="btn btn-o" onclick="markAlertsRead()">Mark all read</button>
+      <button class="btn btn-o" onclick="closeAlerts()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ CUSTOMER STATEMENT ══ -->
+<div class="overlay" id="statementOverlay">
+  <div class="modal" style="max-width:680px">
+    <div class="m-title">🧾 <span id="stName">—</span></div>
+    <div class="m-sub" id="stSub">—</div>
+    <div class="m-sec">
+      <div class="m-sec-ttl">Statement</div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Date</th><th>Amount</th><th>Balance</th><th>Details</th><th>Branch</th><th></th></tr></thead>
+        <tbody id="stBody"></tbody>
+      </table></div>
+    </div>
+    <div class="m-sec">
+      <div class="m-sec-ttl">Record a Payment</div>
+      <div class="g4">
+        <div class="ig"><label for="payAmount">Amount (KES)</label><input type="number" id="payAmount" step="0.01"></div>
+        <div class="ig"><label for="payMethod">Method</label>
+          <select id="payMethod"><option>M-Pesa</option><option>Cash</option><option>Bank transfer</option><option>Cheque</option></select></div>
+        <div class="ig"><label for="payRef">Reference</label><input type="text" id="payRef" placeholder="e.g. RGK7ABC123"></div>
+        <div class="ig"><label for="payDate">Date</label><input type="date" id="payDate"></div>
+      </div>
+      <div class="actions" style="margin-top:10px"><button class="btn btn-g btn-sm" onclick="recordPayment()">💾 Record Payment</button></div>
+    </div>
+    <div class="m-sec" id="stLimitSec" hidden>
+      <div class="m-sec-ttl">Credit Limit (Manager / Admin)</div>
+      <div class="g2" style="gap:10px">
+        <div class="ig"><label for="stLimit">Credit limit (KES, 0 = none)</label><input type="number" id="stLimit" step="100"></div>
+        <div class="ig"><label for="stPhone">Phone</label><input type="text" id="stPhone"></div>
+      </div>
+      <div class="actions" style="margin-top:10px"><button class="btn btn-b btn-sm" onclick="saveCustomer()">💾 Save Account</button></div>
+    </div>
+    <div class="m-foot">
+      <button class="btn btn-o" onclick="printModal()">🖨️ Print Statement</button>
+      <button class="btn btn-o" onclick="closeStatement()">Close</button>
     </div>
   </div>
 </div>
@@ -1076,6 +1220,6 @@
 
 <div id="toast"></div>
 
-<script src="js/app.js?v=7"></script>
+<script src="js/app.js?v=8"></script>
 </body>
 </html>
