@@ -131,7 +131,9 @@ async function logout() {
   clearFormForNewEntry();
   loadRecs();
   renderAnalytics();
-  // The next person to sign in starts from the menu, not the page left open
+  // The next person to sign in starts from the menu on today's date, not where the last one left off
+  delete $('fDate').dataset.userEdited;
+  applyTodayDate();
   openedFromMenu = false;
   try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* ignore */ }
   showPage(null);
@@ -143,7 +145,7 @@ const displayName = u => (u && (u.display_name || u.full_name || u.username)) ||
 // Lock the UI to what this user is allowed to do
 function applyUserToUI() {
   const isAdmin = USER && USER.role === 'admin';
-  const fixed = USER && USER.role === 'staff' && USER.station;
+  const fixed = USER && (USER.role === 'staff' || USER.role === 'manager') && USER.station;
   $('userBtn').textContent = '👤 ' + (USER ? displayName(USER) : 'Sign in');
   // The operator is whoever is signed in; the server records the same name on save
   $('fOperator').value = displayName(USER);
@@ -165,9 +167,18 @@ function dateMinus(dateStr, days) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 
-function lockReason(date) {
+// The saved record for the date and branch on screen, if there is one
+function currentRecord() {
+  return RECS.find(r => r.report_date === sv('fDate') && r.station === sv('fStation')) || null;
+}
+
+const canApprove = () => USER && (USER.role === 'manager' || USER.role === 'admin');
+
+function lockReason(date, rec = currentRecord()) {
   if (!date) return '';
   if (date > todayLocal()) return "This date is in the future, so it can't be saved yet.";
+  if (rec && rec.report_date === date && rec.approved_at)
+    return '✅ This day was approved by ' + rec.approved_by + ' and is locked. An admin must reopen it to make changes.';
   if (USER && USER.role === 'staff' && date < dateMinus(todayLocal(), 1))
     return '🔒 This day is locked. Staff can change today\'s and yesterday\'s records only — ask an admin to change it.';
   return '';
@@ -178,6 +189,38 @@ function updateLockState() {
   const banner = $('lockBanner');
   if (banner) { banner.textContent = reason; banner.hidden = !reason; }
   document.querySelectorAll('[data-save-btn]').forEach(b => { b.disabled = !!reason; b.title = reason; });
+  const rec = currentRecord();
+  const approveBtn = $('approveDayBtn');
+  if (approveBtn) approveBtn.hidden = !(rec && !rec.approved_at && canApprove());
+}
+
+// ── Day approval: a manager (own branch) or admin locks a day; only admins reopen ─
+async function setApproval(id, approve) {
+  if (!requireOnline(approve ? 'approve the day' : 'reopen the day')) return false;
+  if (approve) {
+    const ok = await showConfirmModal('Approve and lock this day?',
+      'Once approved, nobody can change or delete this day until an admin reopens it.');
+    if (!ok) return false;
+  }
+  try {
+    await api('POST', '/records/' + id + '/' + (approve ? 'approve' : 'reopen'), {});
+    toast(approve ? '✅ Day approved and locked' : '🔓 Day reopened');
+    await refreshRecs();
+    updateLockState();
+    return true;
+  } catch (e) { toast('⚠️ ' + e.message, true); return false; }
+}
+
+async function approveCurrentDay() {
+  const rec = currentRecord();
+  if (!rec) { toast('Save the day first, then approve it', true); return; }
+  await setApproval(rec.id, true);
+}
+
+async function approveDetail(approve) {
+  if (DETAIL_ID === null) return;
+  const id = DETAIL_ID;
+  if (await setApproval(id, approve)) openDetail(null, id);
 }
 
 async function logoutOtherDevices() {
@@ -216,9 +259,10 @@ const FIELD_LABELS = {
   gas_items: 'Gas & lubricant sales', invoices: 'Credit invoices', mpesa_till: 'M-Pesa till',
   mpesa_ref: 'M-Pesa ref', credit_customer: 'Credit customer', kra_pin: 'KRA PIN', kra_business: 'Business name',
   kra_period: 'Tax period', kra_branch: 'KRA branch', kra_etr: 'ETR number', kra_return_type: 'Return type',
-  kra_remarks: 'Remarks'
+  kra_remarks: 'Remarks', deliveries: 'Deliveries'
 };
-const ACTION_LABELS = { create: 'Created', update: 'Changed', delete: 'Moved to bin', restore: 'Restored from bin', purge: 'Deleted for good' };
+const ACTION_LABELS = { create: 'Created', update: 'Changed', delete: 'Moved to bin', restore: 'Restored from bin',
+  purge: 'Deleted for good', approve: 'Approved and locked', reopen: 'Reopened' };
 
 function histValue(v) {
   if (Array.isArray(v)) return v.length + ' item' + (v.length === 1 ? '' : 's');
@@ -296,6 +340,7 @@ function openAccount() {
   $('acctName').textContent = displayName(USER);
   $('meFullName').value = USER.full_name || '';
   $('acctRole').textContent = USER.role === 'admin' ? 'Administrator — all branches'
+    : USER.role === 'manager' ? 'Branch Manager — ' + USER.station
     : 'Staff — ' + (USER.station || 'all branches');
   $('usersSec').style.display = USER.role === 'admin' ? 'block' : 'none';
   ['pwCurrent','pwNew'].forEach(id => $(id).value = '');
@@ -379,6 +424,7 @@ let RECS = [];   // saved records
 let INVOICES = []; // today's credit invoices (customer, car reg, phone, company)
 let MISC_ITEMS = []; // today's itemised miscellaneous expenses (name, amount)
 let GAS_ITEMS = [];  // today's itemised gases & lubricants sales (name, category, qty, price)
+let DELIVERIES = []; // today's fuel deliveries (fuel, supplier, note, truck, ordered, received, dips)
 
 // ── Main computation — mirrors C++ engine exactly ────────────────────────────
 function compute() {
@@ -421,9 +467,10 @@ function compute() {
   const dDipVariance = r2(dDipClose - dExpectedStock);
   const kDipVariance = r2(kDipClose - kExpectedStock);
 
-  const pDipHasData = (pDipOpen || pDipClose) > 0;
-  const dDipHasData = (dDipOpen || dDipClose) > 0;
-  const kDipHasData = (kDipOpen || kDipClose) > 0;
+  // A variance only means something once the closing dip has been taken
+  const pDipHasData = pDipClose > 0;
+  const dDipHasData = dDipClose > 0;
+  const kDipHasData = kDipClose > 0;
 
   // Payments
   const mpesa = fv('fMpesa'), cash = fv('fCash');
@@ -475,6 +522,7 @@ function calc() {
   debounceTimer = setTimeout(() => {
     COMP = compute();
     updateUI();
+    checkOpenings();
     setStatus('ok');
   }, 120);
 }
@@ -649,7 +697,7 @@ function setStatus(s) {
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 // ── Pages: the menu opens each section as its own page (#fuel, #pay …) ─────
 // The address hash keeps the browser / phone Back button working.
-const PAGES = ['fuel', 'pay', 'gas', 'dips', 'exp', 'kra', 'ana', 'rec'];
+const PAGES = ['fuel', 'pay', 'gas', 'dips', 'exp', 'kra', 'prices', 'ana', 'rec'];
 let openedFromMenu = false;
 
 function showPage(name) {
@@ -665,6 +713,7 @@ function showPage(name) {
     updatePageContext();
     if (page === 'ana') renderAnalytics();
     if (page === 'rec') loadRecs();
+    if (page === 'prices') renderPricesPage();
   }
   window.scrollTo(0, 0);
 }
@@ -728,6 +777,7 @@ function populateFormFromRecord(r) {
   MISC_ITEMS = Array.isArray(r.misc_items) ? JSON.parse(JSON.stringify(r.misc_items)) : [];
   GAS_ITEMS  = Array.isArray(r.gas_items)  ? JSON.parse(JSON.stringify(r.gas_items))  : [];
   INVOICES   = Array.isArray(r.invoices)   ? JSON.parse(JSON.stringify(r.invoices))   : [];
+  DELIVERIES = Array.isArray(r.deliveries) ? JSON.parse(JSON.stringify(r.deliveries)) : [];
 
   // KRA fields
   setVal('kPin', r.kra_pin); setVal('kBiz', r.kra_business); setVal('kPeriod', r.kra_period);
@@ -747,11 +797,16 @@ function populateFormFromRecord(r) {
   renderMiscItems();
   renderGasItems();
   renderInvoices();
+  renderDeliveries();
   calc();
 }
 
 // ── Clear the form for a fresh entry (used when switching to a date with no data) ─
 function clearFormForNewEntry() {
+  // Owner prices and delivery totals are re-applied below, so unlock them before clearing
+  document.querySelectorAll('input.owner-price').forEach(i => { i.readOnly = false; i.classList.remove('owner-price'); });
+  DELIVERIES = [];
+  renderDeliveries();
   document.querySelectorAll('input[type="number"]').forEach(i => { if (!i.readOnly) i.value = ''; });
   ['kPin','kBiz','kPeriod','kEtr','fMpesaTill','fMpesaRef','fCreditCust','kRemarks']
     .forEach(id => $(id) && ($(id).value = ''));
@@ -786,8 +841,186 @@ function loadRecordForDateAndStation() {
     toast('📂 Loaded existing record for ' + date + ' · ' + station);
   } else {
     clearFormForNewEntry();
+    fillOpeningsFromPrevious();
     toast('🆕 No record for ' + date + ' · ' + station + ' — ready for new entry');
   }
+  applyOwnerPrices();
+}
+
+// ── Opening readings: today's openings should equal the previous saved day's closings ─
+const OPENING_PAIRS = [
+  ['pOpen', 'petrol_close', 'Petrol opening meter'], ['dOpen', 'diesel_close', 'Diesel opening meter'],
+  ['kOpen', 'kero_close', 'Kerosene opening meter'],
+  ['pSalesOpen', 'petrol_sales_close', 'Petrol opening sales meter'], ['dSalesOpen', 'diesel_sales_close', 'Diesel opening sales meter'],
+  ['kSalesOpen', 'kero_sales_close', 'Kerosene opening sales meter'],
+  ['pDipOpen', 'petrol_dip_close', 'Petrol opening dip'], ['dDipOpen', 'diesel_dip_close', 'Diesel opening dip'],
+  ['kDipOpen', 'kero_dip_close', 'Kerosene opening dip'],
+];
+
+function previousRecord() {
+  const date = sv('fDate'), station = sv('fStation');
+  return RECS.filter(r => r.station === station && r.report_date < date)
+    .sort((a, b) => b.report_date.localeCompare(a.report_date))[0] || null;
+}
+
+const niceDate = d => new Date(d + 'T00:00:00').toLocaleDateString('en-KE', { weekday: 'short', day: 'numeric', month: 'short' });
+
+function fillOpeningsFromPrevious() {
+  const prev = previousRecord();
+  const note = $('openingNote');
+  if (!prev) { note.hidden = true; return; }
+  let filled = 0;
+  OPENING_PAIRS.forEach(([id, field]) => {
+    if (Number(prev[field]) > 0 && !$(id).value) { $(id).value = prev[field]; filled++; }
+  });
+  note.textContent = filled ? `↪ Opening readings filled from ${niceDate(prev.report_date)}'s closing readings.` : '';
+  note.hidden = !filled;
+  calc();
+}
+
+function checkOpenings() {
+  const box = $('openingWarn');
+  if (!box) return;
+  const prev = previousRecord();
+  const issues = prev ? OPENING_PAIRS.filter(([id, field]) => {
+    const expected = Number(prev[field]) || 0;
+    return expected > 0 && $(id).value !== '' && Math.abs(fv(id) - expected) > 0.005;
+  }) : [];
+  box.hidden = !issues.length;
+  box.innerHTML = issues.length
+    ? `⚠️ These openings don't match ${esc(niceDate(prev.report_date))}'s closing readings — check the meters before saving:<br>` +
+      issues.map(([id, field, label]) => `<b>${esc(label)}</b>: entered ${fmt(fv(id))}, closing was ${fmt(prev[field])}`).join('<br>')
+    : '';
+}
+
+// ── Prices set by the owner fill the price boxes and can't be typed over ─────
+const PRICE_INPUTS = { petrol: ['pPrice', 'pCost'], diesel: ['dPrice', 'dCost'], kero: ['kPrice', 'kCost'] };
+
+async function applyOwnerPrices() {
+  const station = sv('fStation'), date = sv('fDate');
+  if (!station || !date || !USER || !ONLINE) return;
+  let prices = {};
+  try { prices = (await api('GET', '/prices?station=' + encodeURIComponent(station) + '&date=' + date)).prices; }
+  catch (e) { return; }
+  if (sv('fStation') !== station || sv('fDate') !== date) return;      // user moved on
+  Object.entries(PRICE_INPUTS).forEach(([fuel, ids]) => {
+    const p = prices[fuel];
+    ids.forEach((id, i) => {
+      const el = $(id);
+      if (p) {
+        el.value = i === 0 ? p.sell : p.cost;
+        el.readOnly = true;
+        el.classList.add('owner-price');
+        el.title = 'Set by the owner from ' + p.effective_from;
+      } else if (el.classList.contains('owner-price')) {
+        el.readOnly = false; el.classList.remove('owner-price'); el.title = '';
+      }
+    });
+  });
+  calc();
+}
+
+// ── Fuel Prices page ──────────────────────────────────────────────────────────
+const FUEL_NAMES = { petrol: 'Super Petrol (PMS)', diesel: 'Diesel (AGO)', kero: 'Kerosene (IK)' };
+
+async function renderPricesPage() {
+  const isAdmin = USER && USER.role === 'admin';
+  $('priceAdmin').hidden = !isAdmin;
+  $('priceHistoryBox').hidden = !isAdmin;
+  const station = sv('fStation'), date = sv('fDate') || todayLocal();
+  $('pricesFor').textContent = station + ' · ' + niceDate(date);
+  if (isAdmin && !$('priceFrom').value) $('priceFrom').value = todayLocal();
+  const body = $('pricesNow');
+  try {
+    const { prices } = await api('GET', '/prices?station=' + encodeURIComponent(station) + '&date=' + date);
+    body.innerHTML = Object.keys(FUEL_NAMES).map(f => {
+      const p = prices[f];
+      return `<tr><td>${FUEL_NAMES[f]}</td>${p
+        ? `<td>KES ${fmt(p.sell)}</td><td>KES ${fmt(p.cost)}</td><td>${esc(p.effective_from)}</td><td>${esc(p.set_by)}</td>`
+        : '<td colspan="4" style="color:var(--mut)">Not set — typed in on Fuel Entry</td>'}</tr>`;
+    }).join('');
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="5" style="color:var(--mut)">${esc(ONLINE ? e.message : 'Prices need an internet connection.')}</td></tr>`;
+  }
+  if (!isAdmin) return;
+  try {
+    const { prices } = await api('GET', '/prices/history');
+    $('priceHistory').innerHTML = prices.map(p => `<tr><td>${esc(p.effective_from)}</td><td>${esc(p.station)}</td>
+      <td>${esc(FUEL_NAMES[p.fuel] || p.fuel)}</td><td>KES ${fmt(p.sell)}</td><td>KES ${fmt(p.cost)}</td><td>${esc(p.set_by)}</td></tr>`).join('')
+      || '<tr><td colspan="6" style="color:var(--mut)">No prices set yet.</td></tr>';
+  } catch (e) { /* history is optional */ }
+}
+
+function toggleAllPriceStations(on) {
+  document.querySelectorAll('input[name="priceStation"]').forEach(c => { c.checked = on; });
+}
+
+async function savePrices() {
+  if (!requireOnline('save prices')) return;
+  const stations = [...document.querySelectorAll('input[name="priceStation"]:checked')].map(c => c.value);
+  if (!stations.length) { toast('⚠️ Tick at least one branch', true); return; }
+  const body = { stations, effective_from: sv('priceFrom'),
+    petrol_sell: fv('prPetrolSell'), petrol_cost: fv('prPetrolCost'),
+    diesel_sell: fv('prDieselSell'), diesel_cost: fv('prDieselCost'),
+    kero_sell: fv('prKeroSell'), kero_cost: fv('prKeroCost') };
+  try {
+    await api('POST', '/prices', body);
+    toast('✅ Prices saved for ' + stations.length + ' branch' + (stations.length === 1 ? '' : 'es'));
+    ['prPetrolSell','prPetrolCost','prDieselSell','prDieselCost','prKeroSell','prKeroCost'].forEach(id => $(id).value = '');
+    renderPricesPage();
+    applyOwnerPrices();
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+// ── Fuel deliveries ───────────────────────────────────────────────────────────
+const DELIVERED_INPUT = { petrol: 'pDelivered', diesel: 'dDelivered', kero: 'kDelivered' };
+
+function addDelivery() {
+  const received = fv('dvReceived');
+  if (received <= 0) { toast('⚠️ Enter the litres received', true); $('dvReceived').focus(); return; }
+  DELIVERIES.push({
+    id: Date.now(), fuel: sv('dvFuel'), supplier: sv('dvSupplier'), note_no: sv('dvNote'),
+    truck_reg: sv('dvTruck').toUpperCase(), litres_ordered: fv('dvOrdered'), litres_received: received,
+    dip_before: fv('dvDipBefore'), dip_after: fv('dvDipAfter')
+  });
+  ['dvSupplier','dvNote','dvTruck','dvOrdered','dvReceived','dvDipBefore','dvDipAfter'].forEach(id => $(id).value = '');
+  renderDeliveries();
+  toast('🚚 Delivery added');
+}
+
+function deleteDelivery(id) {
+  DELIVERIES = DELIVERIES.filter(d => d.id !== id);
+  renderDeliveries();
+}
+
+function deliveryChecks(d) {
+  const short = (d.litres_ordered || 0) - (d.litres_received || 0);
+  const dipGain = d.dip_before > 0 && d.dip_after > 0 ? d.dip_after - d.dip_before : null;
+  return { short, dipGain, dipDiff: dipGain === null ? null : dipGain - d.litres_received };
+}
+
+function renderDeliveries() {
+  const list = $('deliveriesList');
+  if (!list) return;
+  list.innerHTML = DELIVERIES.length ? DELIVERIES.map(d => {
+    const { short, dipGain, dipDiff } = deliveryChecks(d);
+    return `<div class="item-row">
+      <span class="grow"><b>${esc(FUEL_NAMES[d.fuel] || d.fuel)}</b> · ${fmt(d.litres_received)} L received
+        <br><small>${esc(d.supplier || 'Supplier —')} · ${esc(d.note_no || 'no note')} · ${esc(d.truck_reg || 'no truck')}</small></span>
+      <span>${d.litres_ordered ? `Ordered ${fmt(d.litres_ordered)} L · <b class="${short > 0.5 ? 'bad' : 'ok'}">${short > 0.5 ? 'Short ' + fmt(short) + ' L' : 'Full'}</b>` : ''}
+        ${dipGain !== null ? `<br><small>Tank rose ${fmt(dipGain)} L (${Math.abs(dipDiff) < 20 ? 'matches' : '<b class="bad">' + (dipDiff < 0 ? 'short ' : 'over ') + fmt(Math.abs(dipDiff)) + ' L</b>'})</small>` : ''}</span>
+      <button class="btn btn-r btn-xs" onclick="deleteDelivery(${Number(d.id)})">✕</button>
+    </div>`;
+  }).join('') : '<div style="font-family:var(--mono);font-size:.74rem;color:var(--mut)">No deliveries recorded today.</div>';
+  // Logged deliveries decide the received litres (the server applies the same rule)
+  Object.entries(DELIVERED_INPUT).forEach(([fuel, id]) => {
+    const el = $(id);
+    if (DELIVERIES.length) {
+      el.value = DELIVERIES.filter(d => d.fuel === fuel).reduce((s, d) => s + (d.litres_received || 0), 0) || '';
+      el.readOnly = true; el.title = 'Total of the deliveries logged below';
+    } else if (el.readOnly) { el.readOnly = false; el.title = ''; }
+  });
+  calc();
 }
 
 // ── Save record ───────────────────────────────────────────────────────────────
@@ -803,7 +1036,7 @@ async function saveRec() {
   const rec = {
     id:           now,
     uid:          'rec_' + now,
-    report_date:  sv('fDate') || new Date().toISOString().split('T')[0],
+    report_date:  sv('fDate') || todayLocal(),
     station:      sv('fStation') || 'Unknown Station',
     // raw inputs
     petrol_open:  fv('pOpen'),   petrol_close: fv('pClose'),
@@ -846,6 +1079,7 @@ async function saveRec() {
     kra_return_type: sv('kReturnType'),
     kra_remarks:     sv('kRemarks'),
     invoices:        JSON.parse(JSON.stringify(INVOICES)), // snapshot of today's credit invoices
+    deliveries:      JSON.parse(JSON.stringify(DELIVERIES)),
     kra_branch:      sv('kBranch'),
     float_amount:    fv('fFloat'),  banked_amount: fv('fBanked'),
     mpesa_till:      sv('fMpesaTill'), mpesa_ref: sv('fMpesaRef'),
@@ -922,7 +1156,7 @@ function addInvoice() {
 
   const inv = {
     id: Date.now(),
-    invoiceNo: 'INV-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + String(INVOICES.length + 1).padStart(3,'0'),
+    invoiceNo: 'INV-' + (sv('fDate') || todayLocal()).replace(/-/g,'') + '-' + String(INVOICES.length + 1).padStart(3,'0'),
     date: sv('fDate') || todayLocal(),
     station: sv('fStation'),
     customer, company, carReg, phone, fuelType, amount,
@@ -1209,7 +1443,7 @@ function loadRecs() {
   if (!tbody) return;
 
   if (!display.length) {
-    tbody.innerHTML = `<tr><td colspan="15" style="text-align:center;padding:36px;
+    tbody.innerHTML = `<tr><td colspan="16" style="text-align:center;padding:36px;
       color:var(--mut);font-family:var(--mono);font-size:.76rem">
       ${filterBranch ? `No records for ${esc(filterBranch)} yet.` : 'No records saved yet.'}<br>
       Fill in today\'s data and click 💾 Save Daily Record.
@@ -1247,6 +1481,7 @@ function loadRecs() {
         <td><span class="badge ${profit >= 0 ? 'bg' : 'br'}">KES ${fmt(profit)}</span></td>
         <td>KES ${fmt(vat)}</td>
         <td style="color:var(--acc2)">KES ${fmt(tax)}</td>
+        <td>${r.approved_at ? '<span class="badge bg">✅ Approved</span>' : '<span class="badge by">Open</span>'}${(r.opening_mismatches || []).length ? ' <span class="badge br" title="Openings differ from the previous day">⚠️</span>' : ''}</td>
         <td>
           <button class="btn btn-r btn-xs" data-id="${safeId}"
             onclick="event.stopPropagation();delRec(this)">✕</button>
@@ -1255,7 +1490,7 @@ function loadRecs() {
     }).join('');
   } catch(e) {
     console.error('loadRecs render error:', e);
-    tbody.innerHTML = `<tr><td colspan="15" style="color:var(--red);padding:20px;font-family:var(--mono);font-size:.74rem">
+    tbody.innerHTML = `<tr><td colspan="16" style="color:var(--red);padding:20px;font-family:var(--mono);font-size:.74rem">
       Render error: ${esc(e.message)}
     </td></tr>`;
   }
@@ -1294,7 +1529,26 @@ function openDetail(evt, id) {
 
   DETAIL_ID = Number(id);
   loadHistory(id);
-  $('rdDeleteBtn').disabled = !!lockReason(r.report_date) && !(USER && USER.role === 'admin');
+  const lockedForMe = !!r.approved_at || (!!lockReason(r.report_date, r) && !(USER && USER.role === 'admin'));
+  $('rdDeleteBtn').disabled = lockedForMe;
+  $('rdApproval').textContent = r.approved_at
+    ? '✅ Approved by ' + r.approved_by + ' · ' + new Date(r.approved_at).toLocaleString('en-KE')
+    : 'Open — not yet approved';
+  $('rdApproveBtn').hidden = !(!r.approved_at && canApprove());
+  $('rdReopenBtn').hidden = !(r.approved_at && USER && USER.role === 'admin');
+  const mism = r.opening_mismatches || [];
+  $('rdMismatchSec').hidden = !mism.length;
+  $('rdMismatches').innerHTML = mism.map(m => {
+    const label = FIELD_LABELS[m.field] || m.field;
+    return `<div class="m-row"><span>${esc(label)}</span><span class="bad">entered ${fmt(m.entered)} · closing ${esc(m.from_date)} was ${fmt(m.expected)}</span></div>`;
+  }).join('');
+  const dels = r.deliveries || [];
+  $('rdDeliveriesSec').hidden = !dels.length;
+  $('rdDeliveries').innerHTML = dels.map(d => {
+    const { short } = deliveryChecks(d);
+    return `<div class="m-row"><span>${esc(FUEL_NAMES[d.fuel] || d.fuel)} · ${esc(d.supplier || '—')} · ${esc(d.note_no || '—')} · ${esc(d.truck_reg || '—')}</span>
+      <span>${fmt(d.litres_received)} L${short > 0.5 ? ' <span class="bad">(short ' + fmt(short) + ' L)</span>' : ''}</span></div>`;
+  }).join('');
 
   const num = v => Number(v || 0);
 
@@ -1608,7 +1862,7 @@ function exportCSV() {
   const blob  = new Blob([hdr + '\n' + rows.join('\n')], { type: 'text/csv' });
   const a     = document.createElement('a');
   a.href      = URL.createObjectURL(blob);
-  a.download  = `PetroKenya_${sv('fStation').replace(/\s+/g,'-') || 'Station'}_${new Date().toISOString().split('T')[0]}.csv`;
+  a.download  = `PetroKenya_${sv('fStation').replace(/\s+/g,'-') || 'Station'}_${todayLocal()}.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -1629,6 +1883,8 @@ async function clearAll() {
   INVOICES = [];
   MISC_ITEMS = [];
   GAS_ITEMS = [];
+  DELIVERIES = [];
+  renderDeliveries();
   if ($('fCredit')) { $('fCredit').readOnly = false; $('fCredit').value = ''; }
   if ($('eMisc')) { $('eMisc').value = ''; }
   renderInvoices();
@@ -1649,12 +1905,15 @@ function toast(msg, isErr=false) {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 // ── Get today's date in local time as YYYY-MM-DD (not UTC — avoids off-by-one) ──
+// Today's date in Kenya (YYYY-MM-DD), whatever time zone the phone is set to, so the
+// app and the server always agree on which day it is
 function todayLocal() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi' }).format(new Date());
+  } catch (e) {
+    const d = new Date(Date.now() + 3 * 3600 * 1000);       // EAT is UTC+3 all year
+    return d.toISOString().slice(0, 10);
+  }
 }
 
 // ── Apply today's date to the date field + header ────────────────────────────
@@ -1710,6 +1969,7 @@ async function init() {
   renderInvoices();
   renderMiscItems();
   renderGasItems();
+  renderDeliveries();
   calc();
 
   // Who is signed in? Offline, fall back to the last signed-in user (read-only)

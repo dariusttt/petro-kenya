@@ -304,3 +304,21 @@ body.in-page .page-bar{display:flex}
 .lock-banner{margin-bottom:16px;padding:11px 15px;border-radius:8px;font-family:var(--mono);font-size:.74rem;
   background:rgba(245,197,24,.07);border:1px solid rgba(245,197,24,.25);color:var(--acc2);line-height:1.6}
 .btn:disabled{opacity:.45;cursor:not-allowed}
+
+/* ════ STAGE 2: PRICES, OPENINGS, DELIVERIES, APPROVAL ════ */
+.page-save{margin-left:auto;flex-shrink:0;padding:8px 14px;font-size:.8rem}
+.info-note,.warn-note{margin-bottom:14px;padding:11px 15px;border-radius:8px;font-family:var(--mono);font-size:.74rem;line-height:1.6}
+.info-note{background:rgba(91,184,224,.07);border:1px solid rgba(91,184,224,.25);color:var(--blue)}
+.warn-note{background:rgba(224,82,82,.07);border:1px solid rgba(224,82,82,.3);color:var(--red)}
+.warn-note b{color:var(--txt)}
+.chk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:6px 12px}
+.chk{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:.76rem;color:var(--txt);
+  text-transform:none;letter-spacing:0;cursor:pointer}
+.chk input{width:auto}
+input.owner-price{background:rgba(91,184,224,.06);border-color:rgba(91,184,224,.3);color:var(--blue)}
+.item-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--s2);border:1px solid var(--brd);
+  border-radius:7px;padding:8px 12px;font-family:var(--mono);font-size:.76rem}
+.item-row .grow{flex:1;min-width:160px}
+.item-row small{color:var(--mut)}
+.bad{color:var(--red)}.ok{color:var(--acc)}
+.badge.by{background:rgba(91,184,224,.1);color:var(--blue);border:1px solid rgba(91,184,224,.25)}

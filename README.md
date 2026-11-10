@@ -67,6 +67,7 @@ Back up the database by downloading the `.sqlite3` file, or use **📥 Export CS
 | Role | Can do |
 |------|--------|
 | **admin** | Everything: all branches, any date, the bin, add/remove users, reset passwords, sign users out |
+| **manager** (always tied to a branch) | That branch: any earlier day, approve days, bin records |
 | **staff** with a branch | Only that branch — see its records; save or bin today's and yesterday's |
 | **staff** without a branch | All branches, same date limit, no bulk moves and no user management |
 
@@ -78,6 +79,21 @@ Back up the database by downloading the `.sqlite3` file, or use **📥 Export CS
   or delete it for good; its history is kept even then.
 - Staff can only change today's and yesterday's records; older days are locked.
   Nobody can save a future date.
+
+**Daily workflow**
+
+- **Branch managers** (role *manager*, tied to one branch) can change any earlier
+  day of their branch and **approve** a day from the KRA Filing page or the
+  record's details. An approved day is locked for everyone until an admin reopens it.
+- **💲 Fuel Prices** (menu): admins set selling and cost prices per branch from a
+  date. Those prices fill in automatically and can't be typed over; the server
+  applies them on every save. Fuels without a set price can still be typed.
+- **Opening readings** (meters and dips) are filled from the previous saved day's
+  closing readings. If someone changes them, the page warns before saving and the
+  record is flagged ⚠️ in Records and in its details.
+- **🚚 Fuel Deliveries** (Dips page): log supplier, delivery note, truck, litres
+  ordered and received, and tank dips before and after. Received litres fill the
+  deliveries boxes; short deliveries and dip differences are shown.
 
 **Sign-in safety**
 

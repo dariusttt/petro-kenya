@@ -74,6 +74,7 @@ class ServerCase(unittest.TestCase):
         auth.create("boss", PASSWORD, "admin")
         auth.create("kisumu", PASSWORD, "staff", "Kisumu Branch")
         auth.create("roamer", PASSWORD, "staff")
+        auth.create("kmanager", PASSWORD, "manager", "Kisumu Branch")
         threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
 
     @classmethod
@@ -87,7 +88,7 @@ class ServerCase(unittest.TestCase):
         self.httpd.RequestHandlerClass.auth.fails.clear()
         self.httpd.RequestHandlerClass.auth.account_fails.clear()
         conn = self.httpd.RequestHandlerClass.store.conn
-        for table in ("records", "record_versions"):
+        for table in ("records", "record_versions", "prices"):
             conn.execute("DELETE FROM %s" % table)
         conn.commit()
         self.admin = Client(self.base).login("boss")
@@ -414,6 +415,99 @@ class SecurityTest(ServerCase):
         self.assertEqual(staff.req("DELETE", "/api/records/%d" % rid)[0], 403)
         self.assertEqual(staff.req("POST", "/api/records", {**old, "report_date": "2026-10-14"})[0], 201)
         self.assertEqual(self.admin.req("POST", "/api/records", {**SAMPLE, "report_date": "2026-10-16"})[0], 400)
+
+
+class WorkflowTest(ServerCase):
+    """Branch managers, day approval, owner-set prices, opening checks and deliveries."""
+    KISUMU = {**SAMPLE, "station": "Kisumu Branch"}
+
+    def test_manager_needs_a_branch_and_is_limited_to_it(self):
+        self.assertEqual(self.admin.req("POST", "/api/users", {"username": "nobranch", "password": "Mango-Tree-42",
+                                                               "role": "manager"})[0], 400)
+        mgr = Client(self.base).login("kmanager")
+        self.assertEqual(mgr.req("POST", "/api/records", SAMPLE)[0], 403)               # Westlands
+        old = {**self.KISUMU, "report_date": "2026-10-01"}
+        self.assertEqual(mgr.req("POST", "/api/records", old)[0], 201)                  # older days OK
+        self.assertEqual(mgr.req("GET", "/api/users")[0], 403)
+
+    def test_approved_day_is_locked_until_an_admin_reopens_it(self):
+        staff, mgr = Client(self.base).login("kisumu"), Client(self.base).login("kmanager")
+        rid = staff.req("POST", "/api/records", self.KISUMU)[1]["record"]["id"]
+        self.assertEqual(staff.req("POST", "/api/records/%d/approve" % rid, {})[0], 403)
+        status, res, _ = mgr.req("POST", "/api/records/%d/approve" % rid, {})
+        self.assertEqual((status, res["record"]["approved_by"]), (200, "kmanager"))
+        self.assertEqual(mgr.req("POST", "/api/records/%d/approve" % rid, {})[0], 409)
+        for client in (staff, mgr, self.admin):                                         # nobody edits it
+            self.assertEqual(client.req("POST", "/api/records", {**self.KISUMU, "cash_amount": 1})[0], 409)
+        self.assertEqual(staff.req("DELETE", "/api/records/%d" % rid)[0], 409)
+        self.assertEqual(mgr.req("POST", "/api/records/%d/reopen" % rid, {})[0], 403)
+        self.assertEqual(self.admin.req("POST", "/api/records/%d/reopen" % rid, {})[0], 200)
+        self.assertEqual(staff.req("POST", "/api/records", {**self.KISUMU, "cash_amount": 1})[0], 200)
+        actions = [h["action"] for h in self.admin.req("GET", "/api/records/%d/history" % rid)[1]["history"]]
+        self.assertEqual(actions, ["create", "approve", "reopen", "update"])
+        other = self.admin.req("POST", "/api/records", SAMPLE)[1]["record"]["id"]
+        self.assertEqual(mgr.req("POST", "/api/records/%d/approve" % other, {})[0], 404)  # other branch
+
+    def test_owner_prices_override_typed_prices(self):
+        staff = Client(self.base).login("kisumu")
+        body = {"stations": ["Kisumu Branch", "Nakuru Branch"], "effective_from": "2026-10-14",
+                "petrol_sell": 190.5, "petrol_cost": 175}
+        self.assertEqual(staff.req("POST", "/api/prices", body)[0], 403)
+        self.assertEqual(self.admin.req("POST", "/api/prices", body)[1]["saved"], 2)
+        self.assertEqual(self.admin.req("POST", "/api/prices", {**body, "petrol_cost": 999})[0], 400)
+        self.assertEqual(self.admin.req("POST", "/api/prices", {**body, "stations": ["Moon"]})[0], 400)
+        prices = staff.req("GET", "/api/prices?date=2026-10-14")[1]["prices"]
+        self.assertEqual(prices["petrol"]["sell"], 190.5)
+        self.assertNotIn("diesel", prices)                    # diesel left blank, not set
+        self.assertEqual(staff.req("GET", "/api/prices?date=2026-10-13")[1]["prices"], {})
+        rec = staff.req("POST", "/api/records", {**self.KISUMU, "petrol_price": 100})[1]["record"]
+        self.assertEqual((rec["petrol_price"], rec["petrol_cost"]), (190.5, 175))
+        self.assertEqual(rec["diesel_price"], 172)            # typed price kept where none is set
+        self.assertEqual(rec["prices_set_by_owner"], ["petrol"])
+        self.assertEqual(rec["gross_revenue"], round(100 * 190.5 + 50 * 172 + 2000, 2))
+
+    def test_openings_are_checked_against_the_previous_day(self):
+        yday = {**SAMPLE, "report_date": "2026-10-13", "petrol_dip_close": 5000}
+        self.admin.req("POST", "/api/records", yday)
+        prev = self.admin.req("GET", "/api/records/previous?station=Westlands%20Branch&date=2026-10-14")[1]
+        self.assertEqual(prev["record"]["report_date"], "2026-10-13")
+        good = {**SAMPLE, "petrol_open": 1100, "petrol_close": 1200, "diesel_open": 550, "diesel_close": 600,
+                "petrol_dip_open": 5000}
+        self.assertEqual(self.admin.req("POST", "/api/records", good)[1]["record"]["opening_mismatches"], [])
+        bad = {**good, "petrol_open": 1080}
+        mism = self.admin.req("POST", "/api/records", bad)[1]["record"]["opening_mismatches"]
+        self.assertEqual(mism, [{"field": "petrol_open", "expected": 1100, "entered": 1080,
+                                 "from_date": "2026-10-13"}])
+
+    def test_deliveries_set_received_litres(self):
+        body = {**SAMPLE, "petrol_delivered": 1,  "deliveries": [
+            {"fuel": "petrol", "supplier": "Vivo", "note_no": "DN-1", "truck_reg": "KCA 111A",
+             "litres_ordered": 10000, "litres_received": 9950, "dip_before": 2000, "dip_after": 11940},
+            {"fuel": "petrol", "litres_ordered": 5000, "litres_received": 5000},
+            {"fuel": "jetfuel", "litres_received": 99}]}
+        rec = self.admin.req("POST", "/api/records", body)[1]["record"]
+        self.assertEqual(rec["petrol_delivered"], 14950)
+        self.assertEqual(rec["diesel_delivered"], 0)
+        self.assertEqual(len(rec["deliveries"]), 2)            # unknown fuel dropped
+        self.assertEqual(rec["delivery_shortfall_litres"], 50)
+
+    def test_old_databases_gain_the_manager_role(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "old.sqlite3")
+            import sqlite3
+            conn = sqlite3.connect(path)
+            conn.executescript("""
+                CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    pw_hash TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('admin', 'staff')), station TEXT,
+                    created_at TEXT NOT NULL, full_name TEXT);
+                INSERT INTO users VALUES (7, 'mary', 'x', 'staff', 'Kisumu Branch', '2026-01-01', 'Mary W');
+            """)
+            conn.close()
+            store = server.Store(path)
+            auth = server.Auth(store)
+            self.assertEqual(auth.get(7)["display_name"], "Mary W")
+            self.assertEqual(auth.create("boss2", "Mango-Tree-42", "manager", "Kisumu Branch")["role"], "manager")
+            store.conn.close()
 
 
 class BootstrapTest(unittest.TestCase):

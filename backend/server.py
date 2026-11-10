@@ -27,10 +27,15 @@ API (all JSON; everything except /api/health and /api/login needs a signed-in se
     GET    /api/records/<id>/history     every saved version and what changed
     GET    /api/bin   POST /api/bin/<id>/restore   DELETE /api/bin/<id>   (admin)
     POST   /api/me/logout-all            POST /api/users/<id>/logout   (admin)
+    POST   /api/records/<id>/approve     (manager of the branch, admin)
+    POST   /api/records/<id>/reopen      (admin)
+    GET    /api/records/previous?station=&date=     latest saved day before a date
+    GET    /api/prices?station=&date=    POST /api/prices (admin)   GET /api/prices/history
     GET    /api/analytics?station=       GET /api/export.csv?station=
     GET|POST /api/users   DELETE /api/users/<id>   POST /api/users/<id>/password   (admin)
 
-Roles: "admin" manages users and all branches. "staff" with a station can only
+Roles: "admin" manages users and all branches. "manager" runs one branch: any
+earlier day, and approves days, which locks them until an admin reopens them. "staff" with a station can only
 see and edit that branch; staff without a station can use every branch but
 cannot bulk-delete or manage users. Staff may only change today's and
 yesterday's records. Deleting moves a record to the bin, and every change is
@@ -108,7 +113,8 @@ TEXT_FIELDS = [
     "kra_pin", "kra_business", "kra_period", "kra_branch", "kra_etr",
     "kra_return_type", "kra_remarks",
 ]
-LIST_FIELDS = ["misc_items", "gas_items", "invoices"]
+LIST_FIELDS = ["misc_items", "gas_items", "invoices", "deliveries"]
+FUELS = ("petrol", "diesel", "kero")
 
 CSV_COLS = [
     "report_date", "station", "operator",
@@ -179,6 +185,11 @@ def compute(raw):
     grossRev = r2(pRev + dRev + kRev + gas_lube_rev)
     totalFC = r2(pFC + dFC + kFC)
 
+    # Deliveries: litres received per fuel, and how far short of the order they came
+    deliveries = raw.get("deliveries") or []
+    delivery_short = r2(sum(max(0.0, num(d.get("litres_ordered")) - num(d.get("litres_received")))
+                            for d in deliveries))
+
     pump = {}
     for prefix, rev in (("petrol", pRev), ("diesel", dRev), ("kero", kRev)):
         sales = max(0.0, r2(g(prefix + "_sales_close") - g(prefix + "_sales_open")))
@@ -235,6 +246,7 @@ def compute(raw):
         "total_excise": totalExcise,
         "road_levy_petrol": r2(pL * RL_P), "road_levy_diesel": r2(dL * RL_D),
         "total_tax": r2(outputVAT + totalExcise),
+        "delivery_shortfall_litres": delivery_short,
     }
 
 
@@ -268,11 +280,38 @@ def clean_input(body):
         if not isinstance(v, list) or not all(isinstance(i, dict) for i in v):
             raise ApiError(HTTPStatus.BAD_REQUEST, f"{k} must be a list of objects")
         rec[k] = [clean_item(i) for i in v[:500]]
+    # Logged deliveries decide the litres received; the typed totals are only used without them
+    deliveries = [d for d in rec["deliveries"] if d.get("fuel") in FUELS]
+    rec["deliveries"] = deliveries
+    if deliveries:
+        for fuel in FUELS:
+            rec[fuel + "_delivered"] = r2(sum(num(d.get("litres_received"))
+                                              for d in deliveries if d.get("fuel") == fuel))
     return rec
 
 
+# Opening readings that should equal the previous day's closing readings
+OPENING_PAIRS = [(f + "_open", f + "_close") for f in FUELS] + \
+    [(f + "_sales_open", f + "_sales_close") for f in FUELS] + \
+    [(f + "_dip_open", f + "_dip_close") for f in FUELS]
+
+
+def opening_mismatches(rec, previous):
+    """Openings that differ from the previous saved day's closings (meter tampering or typos)."""
+    if not previous:
+        return []
+    out = []
+    for open_f, close_f in OPENING_PAIRS:
+        expected, entered = num(previous.get(close_f)), num(rec.get(open_f))
+        if expected > 0 and abs(expected - entered) > 0.005:
+            out.append({"field": open_f, "expected": expected, "entered": entered,
+                        "from_date": previous["report_date"]})
+    return out
+
+
 # Item fields that must be numbers; everything else in an item is kept as short text
-ITEM_NUM_FIELDS = {"id", "qty", "price", "amount"}
+ITEM_NUM_FIELDS = {"id", "qty", "price", "amount",
+                   "litres_ordered", "litres_received", "dip_before", "dip_after"}
 
 
 def clean_item(item):
@@ -317,6 +356,17 @@ class Store:
                 at          TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_versions_record ON record_versions (record_id);
+            CREATE TABLE IF NOT EXISTS prices (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                station        TEXT NOT NULL,
+                fuel           TEXT NOT NULL,
+                sell           REAL NOT NULL,
+                cost           REAL NOT NULL,
+                effective_from TEXT NOT NULL,
+                set_by         TEXT NOT NULL,
+                set_at         TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_prices ON prices (station, fuel, effective_from);
         """)
         # Columns added after the first release are added in place on older databases
         cols = [r["name"] for r in self.conn.execute("PRAGMA table_info(records)").fetchall()]
@@ -367,6 +417,29 @@ class Store:
                 "SELECT * FROM records WHERE id = ? AND deleted_at IS %s" % ("NOT NULL" if deleted else "NULL"),
                 (rec_id,)).fetchone()
         return self._row(row) if row else None
+
+    def previous(self, station, report_date):
+        """The latest saved record for a branch before a date."""
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT * FROM records WHERE station = ? AND report_date < ? AND deleted_at IS NULL"
+                " ORDER BY report_date DESC LIMIT 1", (station, report_date)).fetchone()
+        return self._row(row) if row else None
+
+    def set_approval(self, rec_id, by, approve):
+        with self.lock:
+            if approve:
+                cur = self.conn.execute(
+                    "UPDATE records SET approved_at = ?, approved_by = ? WHERE id = ? AND approved_at IS NULL"
+                    " AND deleted_at IS NULL", (now_iso(), by, rec_id))
+            else:
+                cur = self.conn.execute(
+                    "UPDATE records SET approved_at = NULL, approved_by = NULL WHERE id = ?"
+                    " AND approved_at IS NOT NULL AND deleted_at IS NULL", (rec_id,))
+            if cur.rowcount:
+                self._version(rec_id, "approve" if approve else "reopen", by)
+            self.conn.commit()
+        return cur.rowcount
 
     def find_day(self, station, report_date):
         """The record for a branch and day, including one sitting in the bin."""
@@ -464,6 +537,35 @@ class Store:
             self.conn.execute("DELETE FROM records WHERE id = ?", (rec_id,))
             self.conn.commit()
         return 1
+
+    # ── Fuel prices set by the owner ──
+    def effective_prices(self, station, date):
+        """Selling and cost price per fuel in force for a branch on a date (latest wins)."""
+        out = {}
+        with self.lock:
+            for fuel in FUELS:
+                row = self.conn.execute(
+                    "SELECT * FROM prices WHERE station = ? AND fuel = ? AND effective_from <= ?"
+                    " ORDER BY effective_from DESC, id DESC LIMIT 1", (station, fuel, date)).fetchone()
+                if row:
+                    out[fuel] = {"sell": row["sell"], "cost": row["cost"],
+                                 "effective_from": row["effective_from"], "set_by": row["set_by"]}
+        return out
+
+    def set_price(self, station, fuel, sell, cost, effective_from, by):
+        with self.lock:
+            self.conn.execute(
+                "INSERT INTO prices (station, fuel, sell, cost, effective_from, set_by, set_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)", (station, fuel, sell, cost, effective_from, by, now_iso()))
+            self.conn.commit()
+
+    def price_history(self, station=None, limit=200):
+        sql, args = "SELECT * FROM prices", []
+        if station:
+            sql += " WHERE station = ?"; args.append(station)
+        sql += " ORDER BY effective_from DESC, id DESC LIMIT ?"; args.append(limit)
+        with self.lock:
+            return [dict(r) for r in self.conn.execute(sql, args).fetchall()]
 
     def history(self, rec_id):
         """Every saved version of a record, oldest first, with the fields each one changed."""
@@ -579,7 +681,7 @@ class Auth:
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 username   TEXT NOT NULL UNIQUE COLLATE NOCASE,
                 pw_hash    TEXT NOT NULL,
-                role       TEXT NOT NULL CHECK (role IN ('admin', 'staff')),
+                role       TEXT NOT NULL CHECK (role IN ('admin', 'manager', 'staff')),
                 station    TEXT,
                 created_at TEXT NOT NULL
             );
@@ -589,6 +691,26 @@ class Auth:
                 expires_at REAL NOT NULL
             );
         """)
+        # Databases from before the manager role only allow admin/staff; rebuild the table once
+        table_sql = store.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").fetchone()[0]
+        if "'manager'" not in table_sql:
+            old_cols = [r["name"] for r in store.conn.execute("PRAGMA table_info(users)").fetchall()]
+            store.conn.executescript("""
+                CREATE TABLE users_new (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username   TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    pw_hash    TEXT NOT NULL,
+                    role       TEXT NOT NULL CHECK (role IN ('admin', 'manager', 'staff')),
+                    station    TEXT,
+                    created_at TEXT NOT NULL,
+                    full_name  TEXT
+                );
+                INSERT INTO users_new (id, username, pw_hash, role, station, created_at%s)
+                    SELECT id, username, pw_hash, role, station, created_at%s FROM users;
+                DROP TABLE users;
+                ALTER TABLE users_new RENAME TO users;
+            """ % ((", full_name", ", full_name") if "full_name" in old_cols else ("", "")))
         # Databases created before full names existed get the column added in place
         cols = [r["name"] for r in store.conn.execute("PRAGMA table_info(users)").fetchall()]
         if "full_name" not in cols:
@@ -634,11 +756,13 @@ class Auth:
         if not USERNAME_RE.match(username):
             raise ApiError(HTTPStatus.BAD_REQUEST,
                            "Username must be 3-32 letters, numbers, dots, dashes or underscores")
-        if role not in ("admin", "staff"):
-            raise ApiError(HTTPStatus.BAD_REQUEST, "role must be 'admin' or 'staff'")
+        if role not in ("admin", "manager", "staff"):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "role must be 'admin', 'manager' or 'staff'")
         station = (station or "").strip() or None
         if station and station not in STATIONS:
             raise ApiError(HTTPStatus.BAD_REQUEST, "Unknown station")
+        if role == "manager" and not station:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "A branch manager needs a branch")
         check_new_password(password, username)
         try:
             with self.store.lock:
@@ -854,7 +978,7 @@ class Handler(BaseHTTPRequestHandler):
     @staticmethod
     def _station_scope(user, requested):
         """Station a request may touch: staff tied to a branch only get that branch."""
-        if user["role"] == "staff" and user["station"]:
+        if user["role"] in ("staff", "manager") and user["station"]:
             if requested and requested != user["station"]:
                 raise ApiError(HTTPStatus.FORBIDDEN, "You can only access %s" % user["station"])
             return user["station"]
@@ -866,19 +990,34 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(HTTPStatus.FORBIDDEN, "Admins only")
 
     @staticmethod
-    def _check_editable(user, report_date):
-        """Nobody saves a future day; staff may only change today's and yesterday's records."""
+    def _check_editable(user, report_date, existing=None):
+        """Nobody saves a future day or changes an approved one; staff may only change
+        today's and yesterday's records (managers and admins any earlier day)."""
         if report_date > today():
             raise ApiError(HTTPStatus.BAD_REQUEST, "You can't save a record for a future date")
+        if existing and existing.get("approved_at"):
+            raise ApiError(HTTPStatus.CONFLICT,
+                           "This day is approved and locked — an admin must reopen it first")
         if user["role"] == "staff" and report_date < days_before(today(), STAFF_EDIT_DAYS):
             raise ApiError(HTTPStatus.FORBIDDEN,
-                           "Records older than yesterday are locked — ask an admin to change them")
+                           "Records older than yesterday are locked — ask a manager or admin to change them")
+
+    def _prepare_record(self, rec, existing, user):
+        """Server-side rules applied to every save: owner-set prices win over typed ones,
+        openings are checked against the previous day, and the operator is stamped."""
+        prices = self.store.effective_prices(rec["station"], rec["report_date"])
+        for fuel, price in prices.items():
+            rec[fuel + "_price"], rec[fuel + "_cost"] = price["sell"], price["cost"]
+        rec["prices_set_by_owner"] = sorted(prices)
+        rec["opening_mismatches"] = opening_mismatches(
+            rec, self.store.previous(rec["station"], rec["report_date"]))
+        stamp_operator(rec, existing, user)
 
     def _own_record(self, user, rec_id, deleted=False):
         rec = self.store.get(rec_id, deleted=deleted)
         if not rec:
             raise ApiError(HTTPStatus.NOT_FOUND, "Record not found")
-        if user["role"] == "staff" and user["station"] and rec["station"] != user["station"]:
+        if user["role"] in ("staff", "manager") and user["station"] and rec["station"] != user["station"]:
             raise ApiError(HTTPStatus.NOT_FOUND, "Record not found")
         return rec
 
@@ -961,9 +1100,10 @@ class Handler(BaseHTTPRequestHandler):
             if m == "POST":
                 rec = clean_input(self._body())
                 self._station_scope(user, rec["station"])
-                self._check_editable(user, rec["report_date"])
                 existing = self.store.list(rec["station"], rec["report_date"])
-                stamp_operator(rec, existing[0] if existing else None, user)
+                existing = existing[0] if existing else None
+                self._check_editable(user, rec["report_date"], existing)
+                self._prepare_record(rec, existing, user)
                 saved, created = self.store.save(rec, by=user["username"])
                 return self._json(HTTPStatus.CREATED if created else HTTPStatus.OK,
                                   {"created": created, "record": saved})
@@ -981,16 +1121,76 @@ class Handler(BaseHTTPRequestHandler):
                 existing = self._own_record(user, rec_id)
                 rec = clean_input(self._body())
                 self._station_scope(user, rec["station"])
-                self._check_editable(user, existing["report_date"])
+                self._check_editable(user, existing["report_date"], existing)
                 self._check_editable(user, rec["report_date"])
-                stamp_operator(rec, existing, user)
+                self._prepare_record(rec, existing, user)
                 saved, _ = self.store.save(rec, rec_id=rec_id, by=user["username"])
                 return self._json(HTTPStatus.OK, {"created": False, "record": saved})
             if m == "DELETE":
                 existing = self._own_record(user, rec_id)
-                self._check_editable(user, existing["report_date"])
+                self._check_editable(user, existing["report_date"], existing)
                 self.store.delete(rec_id, by=user["username"])
                 return self._json(HTTPStatus.OK, {"deleted": 1})
+
+        # ── Day approval: managers (own branch) and admins approve; only admins reopen ──
+        mm = re.fullmatch(r"/api/records/(\d+)/(approve|reopen)", path)
+        if mm and m == "POST":
+            rec_id, action = int(mm.group(1)), mm.group(2)
+            rec = self._own_record(user, rec_id)
+            if action == "approve":
+                if user["role"] not in ("manager", "admin"):
+                    raise ApiError(HTTPStatus.FORBIDDEN, "Only a branch manager or admin can approve a day")
+                if rec["report_date"] > today():
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "You can't approve a future day")
+                if not self.store.set_approval(rec_id, user["username"], True):
+                    raise ApiError(HTTPStatus.CONFLICT, "This day is already approved")
+            else:
+                self._require_admin(user)
+                if not self.store.set_approval(rec_id, user["username"], False):
+                    raise ApiError(HTTPStatus.CONFLICT, "This day is not approved")
+            return self._json(HTTPStatus.OK, {"record": self.store.get(rec_id)})
+
+        # Previous saved day, used to fill today's opening readings
+        if path == "/api/records/previous" and m == "GET":
+            station = self._station_scope(user, q.get("station"))
+            date = q.get("date") or today()
+            if not station or not DATE_RE.match(date):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "station and date are required")
+            return self._json(HTTPStatus.OK, {"record": self.store.previous(station, date)})
+
+        # ── Fuel prices: everyone reads, only admins set ──
+        if path == "/api/prices" and m == "GET":
+            station = self._station_scope(user, q.get("station"))
+            date = q.get("date") or today()
+            if not station or not DATE_RE.match(date):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "station and date are required")
+            return self._json(HTTPStatus.OK, {"station": station, "date": date,
+                                              "prices": self.store.effective_prices(station, date)})
+        if path == "/api/prices" and m == "POST":
+            self._require_admin(user)
+            body = self._body()
+            stations = body.get("stations") or []
+            if not isinstance(stations, list) or not stations or any(st not in STATIONS for st in stations):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "Choose one or more valid branches")
+            eff = str(body.get("effective_from") or "")
+            if not DATE_RE.match(eff):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "effective_from must be a date (YYYY-MM-DD)")
+            changed = 0
+            for fuel in FUELS:
+                sell, cost = num(body.get(fuel + "_sell")), num(body.get(fuel + "_cost"))
+                if sell <= 0 and cost <= 0:
+                    continue                          # fuel left blank: keep its current price
+                if sell <= 0 or cost <= 0 or cost > sell * 2 or sell > 1000:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "Check the %s prices" % fuel)
+                for st in stations:
+                    self.store.set_price(st, fuel, r2(sell), r2(cost), eff, user["username"])
+                    changed += 1
+            if not changed:
+                raise ApiError(HTTPStatus.BAD_REQUEST, "Enter at least one fuel's selling and cost price")
+            return self._json(HTTPStatus.CREATED, {"saved": changed})
+        if path == "/api/prices/history" and m == "GET":
+            station = self._station_scope(user, q.get("station"))
+            return self._json(HTTPStatus.OK, {"prices": self.store.price_history(station)})
 
         mm = re.fullmatch(r"/api/records/(\d+)/history", path)
         if mm and m == "GET":

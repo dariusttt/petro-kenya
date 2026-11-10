@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PetroKenya">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/styles.css?v=6">
+<link rel="stylesheet" href="css/styles.css?v=7">
 </head>
 <body>
 
@@ -142,6 +142,7 @@
     <button class="tab-btn" onclick="tab('dips',this)"><span class="tab-name">📏 Dips</span><span class="tab-desc">Tank stock check against pump sales</span></button>
     <button class="tab-btn" onclick="tab('exp',this)"><span class="tab-name">📋 Expenses</span><span class="tab-desc">Daily costs and credit customer invoices</span></button>
     <button class="tab-btn" onclick="tab('kra',this)"><span class="tab-name">🇰🇪 KRA Filing</span><span class="tab-desc">VAT, excise and road levy for the day</span></button>
+    <button class="tab-btn" onclick="tab('prices',this)"><span class="tab-name">💲 Fuel Prices</span><span class="tab-desc">Selling and cost prices set by the owner</span></button>
     <button class="tab-btn" onclick="tab('ana',this)"><span class="tab-name">📊 Analytics</span><span class="tab-desc">Last 7 days and all-time totals</span></button>
     <button class="tab-btn" onclick="tab('rec',this)"><span class="tab-name">🗂️ Records</span><span class="tab-desc">Saved days for every branch</span></button>
   </div>
@@ -153,10 +154,13 @@
         <div class="page-title" id="pageTitle">—</div>
         <div class="page-ctx" id="pageCtx">—</div>
       </div>
+      <button class="btn btn-g page-save" data-save-btn onclick="saveRec()">💾 Save</button>
     </div>
     <div class="lock-banner" id="lockBanner" hidden></div>
   <!-- ══ PANEL: FUEL ══ -->
   <div class="panel" id="p-fuel">
+    <div class="info-note" id="openingNote" hidden></div>
+    <div class="warn-note" id="openingWarn" hidden></div>
     <div class="g2">
       <!-- PETROL -->
       <div class="box">
@@ -464,6 +468,28 @@
       </div>
     </div>
 
+    <div class="box" style="margin-top:14px">
+      <div class="box-title">🚚 Fuel Deliveries
+        <span style="margin-left:auto;font-family:var(--mono);font-size:.68rem;color:var(--mut)">
+          Received litres fill the Deliveries boxes above</span>
+      </div>
+      <div id="deliveriesList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px"></div>
+      <div class="g4">
+        <div class="ig"><label for="dvFuel">Fuel</label>
+          <select id="dvFuel"><option value="petrol">Petrol (PMS)</option><option value="diesel">Diesel (AGO)</option><option value="kero">Kerosene (IK)</option></select></div>
+        <div class="ig"><label for="dvSupplier">Supplier</label><input type="text" id="dvSupplier" placeholder="e.g. Vivo Energy"></div>
+        <div class="ig"><label for="dvNote">Delivery Note No.</label><input type="text" id="dvNote" placeholder="e.g. DN-20431"></div>
+        <div class="ig"><label for="dvTruck">Truck Reg.</label><input type="text" id="dvTruck" placeholder="e.g. KCB 456T" style="text-transform:uppercase"></div>
+        <div class="ig"><label for="dvOrdered">Litres Ordered</label><input type="number" id="dvOrdered" placeholder="0" step="0.01"></div>
+        <div class="ig"><label for="dvReceived">Litres Received</label><input type="number" id="dvReceived" placeholder="0" step="0.01"></div>
+        <div class="ig"><label for="dvDipBefore">Dip Before (L)</label><input type="number" id="dvDipBefore" placeholder="optional" step="0.01"></div>
+        <div class="ig"><label for="dvDipAfter">Dip After (L)</label><input type="number" id="dvDipAfter" placeholder="optional" step="0.01"></div>
+      </div>
+      <div class="actions" style="margin-top:12px">
+        <button class="btn btn-g" onclick="addDelivery()">＋ Add Delivery</button>
+      </div>
+    </div>
+
     <div class="kra-note" style="margin-top:14px">
       ⚠️ <b>HOW TO READ VARIANCE:</b> &nbsp; A <b>negative</b> variance means the tank has
       <b>less fuel than expected</b> (possible leak, theft, or meter under-reading — investigate).
@@ -647,11 +673,60 @@
         <div class="actions">
           <button class="btn btn-y" onclick="openKra()">📋 Preview & File KRA Return</button>
           <button class="btn btn-g" data-save-btn onclick="saveRec()">💾 Save Daily Record</button>
+          <button class="btn btn-b" id="approveDayBtn" onclick="approveCurrentDay()" hidden>✅ Approve Day</button>
           <button class="btn btn-o" onclick="window.print()">🖨️ Print Report</button>
           <button class="btn btn-b" onclick="exportCSV()">📥 Export CSV</button>
           <button class="btn btn-r" onclick="clearAll()">🗑️ Clear Form</button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- ══ PANEL: FUEL PRICES ══ -->
+  <div class="panel" id="p-prices">
+    <div class="box" style="margin-bottom:14px">
+      <div class="box-title">💲 Prices in force <span class="price-tag" id="pricesFor">—</span></div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Fuel</th><th>Selling /L</th><th>Cost /L</th><th>Since</th><th>Set by</th></tr></thead>
+        <tbody id="pricesNow"></tbody>
+      </table></div>
+      <div class="m-sub" style="margin:10px 0 0">Prices set here fill in automatically on the Fuel Entry page and can't be typed over.
+        Fuels with no price set can still be typed in.</div>
+    </div>
+
+    <div class="box" id="priceAdmin" hidden style="margin-bottom:14px">
+      <div class="box-title">Set New Prices (admin)</div>
+      <div class="ig" style="margin-bottom:12px"><label>Branches</label>
+        <div class="chk-grid">
+            <label class="chk"><input type="checkbox" id="priceAll" onchange="toggleAllPriceStations(this.checked)"> <b>All branches</b></label>
+            <label class="chk"><input type="checkbox" name="priceStation" value="Westlands Branch"> Westlands Branch</label>
+            <label class="chk"><input type="checkbox" name="priceStation" value="Himaki Branch"> Himaki Branch</label>
+            <label class="chk"><input type="checkbox" name="priceStation" value="Ngeria Branch"> Ngeria Branch</label>
+            <label class="chk"><input type="checkbox" name="priceStation" value="Nairobi West Branch"> Nairobi West Branch</label>
+            <label class="chk"><input type="checkbox" name="priceStation" value="Mombasa Road Branch"> Mombasa Road Branch</label>
+            <label class="chk"><input type="checkbox" name="priceStation" value="Kisumu Branch"> Kisumu Branch</label>
+            <label class="chk"><input type="checkbox" name="priceStation" value="Nakuru Branch"> Nakuru Branch</label>
+        </div>
+      </div>
+      <div class="g4">
+        <div class="ig"><label for="priceFrom">Effective From</label><input type="date" id="priceFrom"></div>
+        <div class="ig"><label for="prPetrolSell">Petrol Selling /L</label><input type="number" id="prPetrolSell" step="0.01" placeholder="e.g. 189.50"></div>
+        <div class="ig"><label for="prPetrolCost">Petrol Cost /L</label><input type="number" id="prPetrolCost" step="0.01" placeholder="e.g. 174.00"></div>
+        <div class="ig"><label for="prDieselSell">Diesel Selling /L</label><input type="number" id="prDieselSell" step="0.01" placeholder="e.g. 172.00"></div>
+        <div class="ig"><label for="prDieselCost">Diesel Cost /L</label><input type="number" id="prDieselCost" step="0.01" placeholder="e.g. 157.00"></div>
+        <div class="ig"><label for="prKeroSell">Kerosene Selling /L</label><input type="number" id="prKeroSell" step="0.01" placeholder="e.g. 152.00"></div>
+        <div class="ig"><label for="prKeroCost">Kerosene Cost /L</label><input type="number" id="prKeroCost" step="0.01" placeholder="e.g. 138.00"></div>
+      </div>
+      <div class="m-sub" style="margin:10px 0 0">Leave a fuel blank to keep its current price. EPRA reviews prices on the 14th of each month, effective the 15th.</div>
+      <div class="actions"><button class="btn btn-g" onclick="savePrices()">💾 Save Prices</button></div>
+    </div>
+
+    <div class="box" id="priceHistoryBox" hidden>
+      <div class="box-title">Price History</div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>From</th><th>Branch</th><th>Fuel</th><th>Selling</th><th>Cost</th><th>Set by</th></tr></thead>
+        <tbody id="priceHistory"></tbody>
+      </table></div>
     </div>
   </div>
 
@@ -703,7 +778,7 @@
           <th>#</th><th>Date</th><th>Station</th><th>Operator</th>
           <th>P-Litres</th><th>D-Litres</th><th>Total L</th>
           <th>Sales KES</th><th>M-Pesa</th><th>Cash</th>
-          <th>Expenses</th><th>Profit</th><th>VAT</th><th>Tax Total</th><th>Del</th>
+          <th>Expenses</th><th>Profit</th><th>VAT</th><th>Tax Total</th><th>Status</th><th>Del</th>
         </tr></thead>
         <tbody id="recBody">
           <tr><td colspan="15" style="text-align:center;padding:32px;color:var(--mut);font-family:var(--mono);font-size:.76rem">No records yet — save a daily entry first.</td></tr>
@@ -845,6 +920,21 @@
     </div>
 
     <div class="m-sec">
+      <div class="m-sec-ttl">✅ Day Approval</div>
+      <div class="m-row"><span>Status</span><span id="rdApproval">—</span></div>
+    </div>
+
+    <div class="m-sec" id="rdMismatchSec" hidden>
+      <div class="m-sec-ttl">⚠️ Opening Readings Check</div>
+      <div id="rdMismatches"></div>
+    </div>
+
+    <div class="m-sec" id="rdDeliveriesSec" hidden>
+      <div class="m-sec-ttl">🚚 Deliveries</div>
+      <div id="rdDeliveries"></div>
+    </div>
+
+    <div class="m-sec">
       <div class="m-sec-ttl">🕘 Change History</div>
       <div id="rdHistory" class="history-list"><div class="m-row"><span>Loading…</span></div></div>
     </div>
@@ -857,6 +947,8 @@
     <div class="m-foot">
       <button class="btn btn-o" onclick="closeDetail()">Close</button>
       <button class="btn btn-y" onclick="window.print()">🖨️ Print</button>
+      <button class="btn btn-b" id="rdApproveBtn" onclick="approveDetail(true)" hidden>✅ Approve Day</button>
+      <button class="btn btn-o" id="rdReopenBtn" onclick="approveDetail(false)" hidden>🔓 Reopen Day</button>
       <button class="btn btn-r" id="rdDeleteBtn" onclick="deleteFromDetail()">🗑️ Move to Bin</button>
     </div>
   </div>
@@ -941,9 +1033,10 @@
         <div class="ig"><label for="nuRole">Role</label>
           <select id="nuRole">
             <option value="staff">Staff</option>
+            <option value="manager">Branch Manager</option>
             <option value="admin">Admin</option>
           </select></div>
-        <div class="ig"><label for="nuStation">Branch (staff only)</label>
+        <div class="ig"><label for="nuStation">Branch (required for managers)</label>
           <select id="nuStation">
             <option value="">All branches</option>
             <option value="Westlands Branch">Westlands Branch</option>
@@ -983,6 +1076,6 @@
 
 <div id="toast"></div>
 
-<script src="js/app.js?v=6"></script>
+<script src="js/app.js?v=7"></script>
 </body>
 </html>
