@@ -32,7 +32,7 @@
   function load() {
     if (memory) return memory;
     try { memory = JSON.parse(localStorage.getItem(DB_KEY)); } catch (e) { memory = null; }
-    if (!memory || memory.version !== 1) memory = seed();
+    if (!memory || memory.version !== 2) memory = seed();
     return memory;
   }
   function save() { try { localStorage.setItem(DB_KEY, JSON.stringify(memory)); } catch (e) { /* kept in memory */ } }
@@ -284,7 +284,7 @@
 
   // ── Example data for a first visit ─────────────────────────────────────────
   function seed() {
-    const db = { version: 1, seq: {}, users: [], records: [], versions: [], prices: [], alerts: [], customers: [],
+    const db = { version: 2, seq: {}, users: [], records: [], versions: [], prices: [], alerts: [], customers: [],
       payments: [], uploads: {}, settings: { ...DEFAULT_SETTINGS } };
     memory = db;
     const t = kenyaToday();
@@ -300,11 +300,16 @@
     db.customers.push({ id: nextId(db, 'customer'), name: 'Example: Peter Otieno', company: 'Example Matatu Sacco',
       phone: '0722 000 000', credit_limit: 20000, created_by: 'owner', created_at: nowIso() });
     let p = 180000, d = 94000, k = 19800, pd = 19500, dd = 14200, kd = 4600;
+    // Sales meters (KES totalisers on the pumps) run on from day to day too
+    let ps = 33540000, ds = 16130000, ks = 3202000;
     for (let i = 6; i >= 1; i--) {
       const date = daysBefore(t, i), pl = 1550 + (i * 37) % 160, dl = 1180 + (i * 53) % 140, kl = 170 + (i * 11) % 30;
       const delivery = i === 4 ? 10000 : 0;
       const body = { report_date: date, station: 'Westlands Branch', shift: 'Full Day',
         petrol_open: p, petrol_close: p + pl, diesel_open: d, diesel_close: d + dl, kero_open: k, kero_close: k + kl,
+        petrol_sales_open: ps, petrol_sales_close: r2(ps + pl * P.petrol[0]),
+        diesel_sales_open: ds, diesel_sales_close: r2(ds + dl * P.diesel[0]),
+        kero_sales_open: ks, kero_sales_close: r2(ks + kl * P.kero[0]),
         petrol_dip_open: pd, petrol_delivered: delivery, petrol_dip_close: pd + delivery - pl - (i === 3 ? 140 : 8),
         diesel_dip_open: dd, diesel_dip_close: dd - dl - 6, kero_dip_open: kd, kero_dip_close: kd - kl - 2,
         mpesa_amount: 0, cash_amount: 0, exp_wages: 9600, exp_elec: 3200, exp_water: 450,
@@ -323,6 +328,7 @@
       const rec = saveRecord(db, body, i === 1 ? brian : mary).record;
       if (i >= 3) { rec.approved_at = nowIso(); rec.approved_by = 'mary'; version(db, rec, 'approve', 'mary'); }
       p += pl; d += dl; k += kl;
+      ps = body.petrol_sales_close; ds = body.diesel_sales_close; ks = body.kero_sales_close;
       pd = body.petrol_dip_close; dd = body.diesel_dip_close; kd = body.kero_dip_close;
     }
     // One correction, so the change history has something to show
