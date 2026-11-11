@@ -10,6 +10,20 @@
   const STATIONS = ['Westlands Branch', 'Himaki Branch', 'Ngeria Branch', 'Nairobi West Branch',
     'Mombasa Road Branch', 'Kisumu Branch', 'Nakuru Branch'];
   const FUELS = ['petrol', 'diesel', 'kero'];
+  // Same pumps as backend/server.py: three petrol, three diesel, one kerosene
+  const PUMPS = [['p1', 'petrol'], ['p2', 'petrol'], ['p3', 'petrol'], ['d1', 'diesel'], ['d2', 'diesel'], ['d3', 'diesel'], ['k1', 'kero']];
+  const READINGS = ['open', 'close', 'sales_open', 'sales_close'];
+  const pf = (id, x) => 'pump_' + id + '_' + x;
+  const hasPumps = (raw, fuel) => PUMPS.some(([id, f]) => f === fuel && READINGS.some(x => num(raw[pf(id, x)])));
+  function meterTotal(raw, fuel, kind) {
+    if (hasPumps(raw, fuel)) return r2(PUMPS.filter(p => p[1] === fuel)
+      .reduce((s, [id]) => s + Math.max(0, num(raw[pf(id, kind + 'close')]) - num(raw[pf(id, kind + 'open')])), 0));
+    return r2(Math.max(0, num(raw[fuel + '_' + kind + 'close']) - num(raw[fuel + '_' + kind + 'open'])));
+  }
+  function rollUpPumps(rec) {
+    FUELS.forEach(fuel => { if (hasPumps(rec, fuel)) READINGS.forEach(x => {
+      rec[fuel + '_' + x] = r2(PUMPS.filter(p => p[1] === fuel).reduce((s, [id]) => s + num(rec[pf(id, x)]), 0)); }); });
+  }
   const FUEL_NAMES = { petrol: 'Petrol', diesel: 'Diesel', kero: 'Kerosene' };
   const VAT = 0.16, EX = { petrol: 21.95, diesel: 7.21, kero: 7.19 };
   const DEFAULT_SETTINGS = { dip_shortage_litres: 50, cash_shortage_kes: 1000, attendant_shortage_kes: 500,
@@ -32,7 +46,7 @@
   function load() {
     if (memory) return memory;
     try { memory = JSON.parse(localStorage.getItem(DB_KEY)); } catch (e) { memory = null; }
-    if (!memory || memory.version !== 2) memory = seed();
+    if (!memory || memory.version !== 3) memory = seed();
     return memory;
   }
   function save() { try { localStorage.setItem(DB_KEY, JSON.stringify(memory)); } catch (e) { /* kept in memory */ } }
@@ -46,7 +60,7 @@
     const gasLube = r2(gas.reduce((s, i) => s + line(i), 0));
     const L = {}, rev = {}, fc = {};
     FUELS.forEach(f => {
-      L[f] = Math.max(0, g(f + '_close') - g(f + '_open'));
+      L[f] = meterTotal(raw, f, '');
       rev[f] = r2(L[f] * g(f + '_price')); fc[f] = r2(L[f] * g(f + '_cost'));
     });
     const totalL = r2(L.petrol + L.diesel + L.kero);
@@ -55,6 +69,7 @@
     const out = {};
     FUELS.forEach(f => {
       out[f + '_litres'] = r2(L[f]);
+      out[f + '_pump_sales'] = meterTotal(raw, f, 'sales_');
       const expected = r2(g(f + '_dip_open') + g(f + '_delivered') - L[f]);
       out[f + '_expected_stock'] = expected;
       out[f + '_dip_variance'] = r2(g(f + '_dip_close') - expected);
@@ -130,7 +145,10 @@
     return live(db).filter(r => r.station === station && r.report_date < date)
       .sort((a, b) => b.report_date.localeCompare(a.report_date))[0] || null;
   }
-  const OPEN_PAIRS = FUELS.flatMap(f => [[f + '_open', f + '_close'], [f + '_sales_open', f + '_sales_close'], [f + '_dip_open', f + '_dip_close']]);
+  const openPairs = prev => [
+    ...PUMPS.filter(([, f]) => hasPumps(prev, f)).flatMap(([id]) => [[pf(id, 'open'), pf(id, 'close')], [pf(id, 'sales_open'), pf(id, 'sales_close')]]),
+    ...FUELS.filter(f => !hasPumps(prev, f)).flatMap(f => [[f + '_open', f + '_close'], [f + '_sales_open', f + '_sales_close']]),
+    ...FUELS.map(f => [f + '_dip_open', f + '_dip_close'])];
   function prepare(db, rec, existing, user) {
     const prices = effectivePrices(db, rec.station, rec.report_date);
     if (user && user.role === 'staff') {      // staff never see or send cost prices
@@ -140,7 +158,7 @@
     Object.entries(prices).forEach(([f, p]) => { rec[f + '_price'] = p.sell; rec[f + '_cost'] = p.cost; });
     rec.prices_set_by_owner = Object.keys(prices).sort();
     const prev = previous(db, rec.station, rec.report_date);
-    rec.opening_mismatches = prev ? OPEN_PAIRS.filter(([o, c]) => num(prev[c]) > 0 && Math.abs(num(prev[c]) - num(rec[o])) > 0.005)
+    rec.opening_mismatches = prev ? openPairs(prev).filter(([o, c]) => num(prev[c]) > 0 && Math.abs(num(prev[c]) - num(rec[o])) > 0.005)
       .map(([o, c]) => ({ field: o, expected: num(prev[c]), entered: num(rec[o]), from_date: prev.report_date })) : [];
     const dels = (rec.deliveries || []).filter(d => FUELS.includes(d.fuel));
     rec.deliveries = dels;
@@ -164,6 +182,7 @@
     if (existing) checkEditable(user, existing.report_date, existing);
     const rec = JSON.parse(JSON.stringify(body));
     ['id', 'uid', 'approved_at', 'approved_by', 'deleted_at', 'deleted_by', 'created_at', 'updated_at', 'pending', 'pending_error'].forEach(k => delete rec[k]);
+    rollUpPumps(rec);
     prepare(db, rec, existing, user);
     Object.assign(rec, compute(rec));
     const created = !any || !!any.deleted_at;
@@ -288,7 +307,7 @@
 
   // ── Example data for a first visit ─────────────────────────────────────────
   function seed() {
-    const db = { version: 2, seq: {}, users: [], records: [], versions: [], prices: [], alerts: [], customers: [],
+    const db = { version: 3, seq: {}, users: [], records: [], versions: [], prices: [], alerts: [], customers: [],
       payments: [], uploads: {}, settings: { ...DEFAULT_SETTINGS } };
     memory = db;
     const t = kenyaToday();
@@ -303,17 +322,15 @@
       sell: P[f][0], cost: P[f][1], effective_from: daysBefore(t, 20), set_by: 'owner' })));
     db.customers.push({ id: nextId(db, 'customer'), name: 'Example: Peter Otieno', company: 'Example Matatu Sacco',
       phone: '0722 000 000', credit_limit: 20000, created_by: 'owner', created_at: nowIso() });
-    let p = 180000, d = 94000, k = 19800, pd = 19500, dd = 14200, kd = 4600;
-    // Sales meters (KES totalisers on the pumps) run on from day to day too
-    let ps = 33540000, ds = 16130000, ks = 3202000;
+    let pd = 19500, dd = 14200, kd = 4600;
+    // Each pump's litres and sales (KES) meters run on from day to day
+    const meters = { p1: [61200, 11402000], p2: [58350, 10871000], p3: [60450, 11267000],
+      d1: [31800, 5457000], d2: [33100, 5680000], d3: [29100, 4993000], k1: [19800, 3202000] };
+    const share = { p1: .45, p2: .35, p3: .2, d1: .5, d2: .3, d3: .2, k1: 1 };
     for (let i = 6; i >= 1; i--) {
       const date = daysBefore(t, i), pl = 1550 + (i * 37) % 160, dl = 1180 + (i * 53) % 140, kl = 170 + (i * 11) % 30;
       const delivery = i === 4 ? 10000 : 0;
       const body = { report_date: date, station: 'Westlands Branch', shift: 'Full Day',
-        petrol_open: p, petrol_close: p + pl, diesel_open: d, diesel_close: d + dl, kero_open: k, kero_close: k + kl,
-        petrol_sales_open: ps, petrol_sales_close: r2(ps + pl * P.petrol[0]),
-        diesel_sales_open: ds, diesel_sales_close: r2(ds + dl * P.diesel[0]),
-        kero_sales_open: ks, kero_sales_close: r2(ks + kl * P.kero[0]),
         petrol_dip_open: pd, petrol_delivered: delivery, petrol_dip_close: pd + delivery - pl - (i === 3 ? 140 : 8),
         diesel_dip_open: dd, diesel_dip_close: dd - dl - 6, kero_dip_open: kd, kero_dip_close: kd - kl - 2,
         mpesa_amount: 0, cash_amount: 0, exp_wages: 9600, exp_elec: 3200, exp_water: 450,
@@ -322,6 +339,19 @@
         invoices: i === 2 ? [{ id: 1, invoiceNo: 'INV-EX-001', customer: 'Example: Peter Otieno', company: 'Example Matatu Sacco',
           carReg: 'KDA 123X', fuelType: 'Diesel', amount: 12500, customer_id: 1 }] : [],
         attendants: [{ id: 1, name: 'Example: Brian Otieno', expected: 0, cash: 0, mpesa: 0 }] };
+      const sold = { petrol: pl, diesel: dl, kero: kl };
+      FUELS.forEach(fuel => {
+        const ids = PUMPS.filter(x => x[1] === fuel).map(x => x[0]);
+        let left = sold[fuel];
+        ids.forEach((id, n) => {
+          const litres = n === ids.length - 1 ? left : Math.round(sold[fuel] * share[id]);
+          left -= litres;
+          const [lm, sm] = meters[id];
+          Object.assign(body, { [pf(id, 'open')]: lm, [pf(id, 'close')]: lm + litres,
+            [pf(id, 'sales_open')]: sm, [pf(id, 'sales_close')]: r2(sm + litres * P[fuel][0]) });
+          meters[id] = [lm + litres, r2(sm + litres * P[fuel][0])];
+        });
+      });
       const figs = compute({ ...body, petrol_price: P.petrol[0], diesel_price: P.diesel[0], kero_price: P.kero[0] });
       const credit = body.invoices.reduce((s, x) => s + x.amount, 0);
       const toCollect = figs.gross_revenue - credit - (i === 5 ? 1800 : 0);
@@ -331,8 +361,6 @@
       body.attendants[0].mpesa = body.mpesa_amount; body.attendants[0].cash = r2(body.cash_amount - (i === 5 ? 0 : 0));
       const rec = saveRecord(db, body, i === 1 ? brian : mary).record;
       if (i >= 3) { rec.approved_at = nowIso(); rec.approved_by = 'mary'; version(db, rec, 'approve', 'mary'); }
-      p += pl; d += dl; k += kl;
-      ps = body.petrol_sales_close; ds = body.diesel_sales_close; ks = body.kero_sales_close;
       pd = body.petrol_dip_close; dd = body.diesel_dip_close; kd = body.kero_dip_close;
     }
     // One correction, so the change history has something to show

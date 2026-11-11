@@ -191,7 +191,7 @@ const SW = {
 
   // ── Record details ──
   'Fuel Sales': 'Mauzo ya Mafuta',
-  'Pump Sales Meter Cross-Check': 'Ukaguzi wa Mita ya Mauzo', 'Payments Collected': 'Malipo Yaliyokusanywa',
+  'Pump Sales Meter Cross-Check': 'Ukaguzi wa Mita ya Mauzo', 'Pumps & Sales Meter Check': 'Pampu na Ukaguzi wa Mita ya Mauzo', 'Payments Collected': 'Malipo Yaliyokusanywa',
   'Credit': 'Mkopo', 'Card': 'Kadi', 'Credit Customer Invoices': 'Ankara za Wateja wa Mkopo', 'Electricity': 'Umeme',
   'Maintenance': 'Matengenezo', 'Lubricants Stock': 'Akiba ya Vilainishi', 'Profit & Loss': 'Faida na Hasara',
   'Gross Revenue': 'Mapato Ghafi', 'Total Cost': 'Jumla ya Gharama', 'Profit Margin': 'Kiwango cha Faida', 'KRA Tax': 'Kodi ya KRA',
@@ -263,6 +263,11 @@ const SW_PATTERNS = [
   [/^Online · (\d+) waiting to send$/, 'Mtandaoni · $1 zinasubiri kutumwa'],
   [/^Offline · (\d+) waiting to send$/, 'Nje ya mtandao · $1 zinasubiri kutumwa'],
   [/^Margin: (.+)$/, 'Kiwango cha faida: $1'],
+  [/^Pump ([PDK]\d)$/, 'Pampu $1'],
+  [/^Pump ([PDK]\d) · (Petrol|Diesel|Kerosene)$/, (m, id, f) => 'Pampu ' + id + ' · ' + ({ Petrol: 'Petroli', Diesel: 'Dizeli', Kerosene: 'Mafuta ya Taa' })[f]],
+  [/^([\d.,]+) L sold$/, 'Lita $1 zimeuzwa'],
+  [/^Pump ([PDK]\d) (opening|closing) (sales )?meter$/, (m, id, oc, sales) =>
+    'Pampu ' + id + ': mita ya ' + (sales ? 'mauzo ' : '') + (oc === 'opening' ? 'ya kufungua' : 'ya kufunga')],
   [/^Profit\/L: (.+)$/, 'Faida/L: $1'],
   [/^(\d+) records? — all branches$/, 'Rekodi $1 — matawi yote'],
   [/^Short KES (.+)$/, 'Upungufu KES $1'], [/^Over KES (.+)$/, 'Ziada KES $1'],

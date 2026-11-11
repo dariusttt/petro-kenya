@@ -373,3 +373,11 @@ body.no-profit .pbox-4 .pbox-item+.pbox-item{border-left:1px solid var(--brd);bo
   body.no-profit .pbox-4{grid-template-columns:1fr}
   body.no-profit .pbox-4 .pbox-item+.pbox-item{border-left:none;border-top:1px solid var(--brd);padding-top:16px}
 }
+
+/* One block of meter readings per pump inside each fuel's box */
+.pumps{display:flex;flex-direction:column;gap:9px;margin-bottom:9px}
+.pump{border:1px solid var(--brd);border-radius:9px;padding:10px 12px;background:rgba(255,255,255,.015)}
+.pump-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;
+  font-family:var(--mono);font-size:.72rem}
+.pump-name{color:var(--txt,#e8e8e8);font-weight:600;letter-spacing:.5px}
+.pump-sold{color:var(--acc)}

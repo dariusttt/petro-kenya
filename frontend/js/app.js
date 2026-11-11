@@ -329,6 +329,43 @@ async function signOutUser(id, name) {
   } catch (e) { toast('⚠️ ' + e.message, true); }
 }
 
+// ── Pumps: three petrol, three diesel and one kerosene (same list as the server) ─
+const PUMPS = [['p1', 'petrol'], ['p2', 'petrol'], ['p3', 'petrol'],
+               ['d1', 'diesel'], ['d2', 'diesel'], ['d3', 'diesel'], ['k1', 'kero']];
+const PUMP_READINGS = ['open', 'close', 'sales_open', 'sales_close'];
+const FUEL_LABEL = { petrol: 'Petrol', diesel: 'Diesel', kero: 'Kerosene' };
+const pumpName = id => 'Pump ' + id.toUpperCase();
+const pumpsOf = fuel => PUMPS.filter(p => p[1] === fuel).map(p => p[0]);
+const pumpField = (id, reading) => `pump_${id}_${reading}`;   // also the input's id
+
+// Each fuel box gets a block of meter inputs per pump
+document.querySelectorAll('.pumps[data-fuel]').forEach(box => {
+  const box_inputs = (id, reading, label) => `<div class="ig"><label for="${pumpField(id, reading)}">${label}</label>
+    <input type="number" id="${pumpField(id, reading)}" placeholder="0.00" step="0.01" oninput="calc()"></div>`;
+  box.innerHTML = pumpsOf(box.dataset.fuel).map(id => `<div class="pump">
+    <div class="pump-head"><span class="pump-name">⛽ ${pumpName(id)}</span><span class="pump-sold" id="pump_${id}_sold"></span></div>
+    <div class="fuel-row">
+      ${box_inputs(id, 'open', 'Opening Litres Meter (L)')}${box_inputs(id, 'close', 'Closing Litres Meter (L)')}
+      ${box_inputs(id, 'sales_open', 'Opening Sales Meter (KES)')}${box_inputs(id, 'sales_close', 'Closing Sales Meter (KES)')}
+    </div></div>`).join('');
+});
+
+// What one pump moved: closing − opening (nothing until its closing reading is in)
+function pumpMoved(id, kind) {
+  return Math.max(0, r2(fv(pumpField(id, kind + 'close')) - fv(pumpField(id, kind + 'open'))));
+}
+// A fuel's totals over its pumps: litres, KES on the sales meters, and the summed readings
+function fuelMeters(fuel) {
+  const ids = pumpsOf(fuel);
+  const sum = reading => r2(ids.reduce((s, id) => s + fv(pumpField(id, reading)), 0));
+  return {
+    litres: r2(ids.reduce((s, id) => s + pumpMoved(id, ''), 0)),
+    sales: r2(ids.reduce((s, id) => s + pumpMoved(id, 'sales_'), 0)),
+    hasSales: ids.some(id => fv(pumpField(id, 'sales_open')) || fv(pumpField(id, 'sales_close'))),
+    open: sum('open'), close: sum('close'), sales_open: sum('sales_open'), sales_close: sum('sales_close'),
+  };
+}
+
 // ── Change history (shown in a record's details) ─────────────────────────────
 const FIELD_LABELS = {
   report_date: 'Date', station: 'Branch', shift: 'Shift',
@@ -343,6 +380,9 @@ const FIELD_LABELS = {
   kero_dip_open: 'Kerosene opening dip', kero_delivered: 'Kerosene delivered', kero_dip_close: 'Kerosene closing dip',
   mpesa_amount: 'M-Pesa', mpesa_txns: 'M-Pesa transactions', cash_amount: 'Cash', credit_amount: 'Credit sales',
   card_amount: 'Card', float_amount: 'Opening float', banked_amount: 'Cash banked',
+  ...Object.fromEntries(PUMPS.flatMap(([id]) => [['open', 'opening meter'], ['close', 'closing meter'],
+    ['sales_open', 'opening sales meter'], ['sales_close', 'closing sales meter']]
+    .map(([x, what]) => [pumpField(id, x), pumpName(id) + ' ' + what]))),
   exp_wages: 'Wages', exp_elec: 'Electricity', exp_water: 'Water', exp_maint: 'Maintenance',
   exp_lubes: 'Lubricants stock', exp_misc: 'Miscellaneous', misc_items: 'Miscellaneous items',
   gas_items: 'Gas & lubricant sales', invoices: 'Credit invoices', mpesa_till: 'M-Pesa till',
@@ -531,9 +571,8 @@ function compute() {
   const lubeRevOnly = r2(GAS_ITEMS.filter(i => i.category === 'Lubricant').reduce((s,i)=>s+(i.qty*i.price),0));
 
   // Fuel
-  const pL = Math.max(0, fv('pClose') - fv('pOpen'));
-  const dL = Math.max(0, fv('dClose') - fv('dOpen'));
-  const kL = Math.max(0, fv('kClose') - fv('kOpen'));
+  const PM = fuelMeters('petrol'), DM = fuelMeters('diesel'), KM = fuelMeters('kero');
+  const pL = PM.litres, dL = DM.litres, kL = KM.litres;
   const pRev = r2(pL * fv('pPrice')), dRev = r2(dL * fv('dPrice')), kRev = r2(kL * fv('kPrice'));
   const pFC  = r2(pL * fv('pCost')),  dFC  = r2(dL * fv('dCost')),  kFC  = r2(kL * fv('kCost'));
   const pMgn = r2(pRev - pFC), dMgn = r2(dRev - dFC), kMgn = r2(kRev - kFC);
@@ -542,14 +581,12 @@ function compute() {
   const totalFC  = r2(pFC + dFC + kFC);
 
   // Pump sales meter (the pump's own KES counter) — cross-check against calculated revenue
-  const pPumpSales = Math.max(0, r2(fv('pSalesClose') - fv('pSalesOpen')));
-  const dPumpSales = Math.max(0, r2(fv('dSalesClose') - fv('dSalesOpen')));
-  const kPumpSales = Math.max(0, r2(fv('kSalesClose') - fv('kSalesOpen')));
+  const pPumpSales = PM.sales, dPumpSales = DM.sales, kPumpSales = KM.sales;
   const totalPumpSales = r2(pPumpSales + dPumpSales + kPumpSales);
   const pPumpVariance = r2(pRev - pPumpSales);
   const dPumpVariance = r2(dRev - dPumpSales);
   const kPumpVariance = r2(kRev - kPumpSales);
-  const pumpHasData = (fv('pSalesOpen') || fv('pSalesClose') || fv('dSalesOpen') || fv('dSalesClose') || fv('kSalesOpen') || fv('kSalesClose')) > 0;
+  const pumpHasData = PM.hasSales || DM.hasSales || KM.hasSales;
 
   // Tank dip reconciliation: Expected Stock = Opening Dip + Deliveries − Litres Sold (pump meters)
   const pDipOpen = fv('pDipOpen'), pDelivered = fv('pDelivered'), pDipClose = fv('pDipClose');
@@ -698,9 +735,14 @@ function updateUI() {
   $('kPriceTag').textContent = fv('kPrice').toFixed(2);
 
   // Pump sales meter cross-check rows (only shown once sales-meter values are entered)
-  updatePumpCheckRow('p', c.pPumpSales, c.pPumpVariance, fv('pSalesOpen') || fv('pSalesClose'));
-  updatePumpCheckRow('d', c.dPumpSales, c.dPumpVariance, fv('dSalesOpen') || fv('dSalesClose'));
-  updatePumpCheckRow('k', c.kPumpSales, c.kPumpVariance, fv('kSalesOpen') || fv('kSalesClose'));
+  updatePumpCheckRow('p', c.pPumpSales, c.pPumpVariance, fuelMeters('petrol').hasSales);
+  updatePumpCheckRow('d', c.dPumpSales, c.dPumpVariance, fuelMeters('diesel').hasSales);
+  updatePumpCheckRow('k', c.kPumpSales, c.kPumpVariance, fuelMeters('kero').hasSales);
+  // Litres each pump sold, beside its name
+  PUMPS.forEach(([id]) => {
+    const litres = pumpMoved(id, '');
+    $('pump_' + id + '_sold').textContent = litres > 0 ? fmtL(litres) + ' L sold' : '';
+  });
 
   // Tank dip reconciliation rows
   updateDipRow('p', c.pL, c.pExpectedStock, c.pDipVariance, c.pDipHasData);
@@ -1180,15 +1222,16 @@ function populateFormFromRecord(r) {
   const setVal = (id, val) => { if ($(id)) $(id).value = (val === undefined || val === null) ? '' : val; };
 
   // Fuel
-  setVal('pOpen', r.petrol_open);   setVal('pClose', r.petrol_close);
+  PUMPS.forEach(([id]) => PUMP_READINGS.forEach(x => setVal(pumpField(id, x), r[pumpField(id, x)] || '')));
+  // Days saved before pumps were split show their totals on the fuel's first pump
+  Object.keys(FUEL_LABEL).forEach(fuel => {
+    const ids = pumpsOf(fuel);
+    if (!ids.some(id => PUMP_READINGS.some(x => Number(r[pumpField(id, x)] || 0))))
+      PUMP_READINGS.forEach(x => setVal(pumpField(ids[0], x), r[fuel + '_' + x] || ''));
+  });
   setVal('pPrice', r.petrol_price); setVal('pCost', r.petrol_cost);
-  setVal('pSalesOpen', r.petrol_sales_open); setVal('pSalesClose', r.petrol_sales_close);
-  setVal('dOpen', r.diesel_open);   setVal('dClose', r.diesel_close);
   setVal('dPrice', r.diesel_price); setVal('dCost', r.diesel_cost);
-  setVal('dSalesOpen', r.diesel_sales_open); setVal('dSalesClose', r.diesel_sales_close);
-  setVal('kOpen', r.kero_open);     setVal('kClose', r.kero_close);
   setVal('kPrice', r.kero_price);   setVal('kCost', r.kero_cost);
-  setVal('kSalesOpen', r.kero_sales_open);   setVal('kSalesClose', r.kero_sales_close);
   setVal('pDipOpen', r.petrol_dip_open); setVal('pDelivered', r.petrol_delivered); setVal('pDipClose', r.petrol_dip_close);
   setVal('dDipOpen', r.diesel_dip_open); setVal('dDelivered', r.diesel_delivered); setVal('dDipClose', r.diesel_dip_close);
   setVal('kDipOpen', r.kero_dip_open);   setVal('kDelivered', r.kero_delivered);   setVal('kDipClose', r.kero_dip_close);
@@ -1286,10 +1329,9 @@ function loadRecordForDateAndStation() {
 
 // ── Opening readings: today's openings should equal the previous saved day's closings ─
 const OPENING_PAIRS = [
-  ['pOpen', 'petrol_close', 'Petrol opening meter'], ['dOpen', 'diesel_close', 'Diesel opening meter'],
-  ['kOpen', 'kero_close', 'Kerosene opening meter'],
-  ['pSalesOpen', 'petrol_sales_close', 'Petrol opening sales meter'], ['dSalesOpen', 'diesel_sales_close', 'Diesel opening sales meter'],
-  ['kSalesOpen', 'kero_sales_close', 'Kerosene opening sales meter'],
+  ...PUMPS.flatMap(([id]) => [
+    [pumpField(id, 'open'), pumpField(id, 'close'), pumpName(id) + ' opening meter'],
+    [pumpField(id, 'sales_open'), pumpField(id, 'sales_close'), pumpName(id) + ' opening sales meter']]),
   ['pDipOpen', 'petrol_dip_close', 'Petrol opening dip'], ['dDipOpen', 'diesel_dip_close', 'Diesel opening dip'],
   ['kDipOpen', 'kero_dip_close', 'Kerosene opening dip'],
 ];
@@ -1476,15 +1518,14 @@ async function saveRec() {
     report_date:  sv('fDate') || todayLocal(),
     station:      sv('fStation') || 'Unknown Station',
     // raw inputs
-    petrol_open:  fv('pOpen'),   petrol_close: fv('pClose'),
+    ...Object.fromEntries(PUMPS.flatMap(([id]) => PUMP_READINGS.map(x => [pumpField(id, x), fv(pumpField(id, x))]))),
+    ...Object.fromEntries(Object.keys(FUEL_LABEL).flatMap(fuel => {
+      const m = fuelMeters(fuel);
+      return PUMP_READINGS.map(x => [fuel + '_' + x, m[x]]);
+    })),
     petrol_price: fv('pPrice'),  petrol_cost:  fv('pCost'),
-    petrol_sales_open: fv('pSalesOpen'), petrol_sales_close: fv('pSalesClose'),
-    diesel_open:  fv('dOpen'),   diesel_close: fv('dClose'),
     diesel_price: fv('dPrice'),  diesel_cost:  fv('dCost'),
-    diesel_sales_open: fv('dSalesOpen'), diesel_sales_close: fv('dSalesClose'),
-    kero_open:    fv('kOpen'),   kero_close:   fv('kClose'),
     kero_price:   fv('kPrice'),  kero_cost:    fv('kCost'),
-    kero_sales_open: fv('kSalesOpen'), kero_sales_close: fv('kSalesClose'),
     petrol_dip_open: fv('pDipOpen'), petrol_delivered: fv('pDelivered'), petrol_dip_close: fv('pDipClose'),
     diesel_dip_open: fv('dDipOpen'), diesel_delivered: fv('dDelivered'), diesel_dip_close: fv('dDipClose'),
     kero_dip_open: fv('kDipOpen'), kero_delivered: fv('kDelivered'), kero_dip_close: fv('kDipClose'),
@@ -2036,18 +2077,23 @@ function openDetail(evt, id) {
   $('rdKero').textContent   = fmtL(num(r.kero_litres))   + ' L  ·  KES ' + fmt(num(r.kero_litres) * num(r.kero_price));
   $('rdTotalL').textContent = fmtL(num(r.total_litres)) + ' L';
 
-  // Pump sales meter cross-check (only shown if that data was recorded)
+  // Each pump's readings, then the sales-meter cross-check per fuel (only if recorded)
   const pumpSec = $('rdPumpSec'), pumpList = $('rdPumpItems');
+  const moved = (id, kind) => Math.max(0, num(r[pumpField(id, kind + 'close')]) - num(r[pumpField(id, kind + 'open')]));
+  const pumpRows = PUMPS.filter(([id]) => PUMP_READINGS.some(x => num(r[pumpField(id, x)])))
+    .map(([id, fuel]) => `<div class="m-row"><span>⛽ ${pumpName(id)} · ${FUEL_LABEL[fuel]}</span>
+      <span>${fmtL(moved(id, ''))} L${moved(id, 'sales_') ? ' · KES ' + fmt(moved(id, 'sales_')) : ''}</span></div>`);
   const fuelPumpData = [
-    { label: 'Petrol', open: r.petrol_sales_open, close: r.petrol_sales_close, calcRev: num(r.petrol_litres) * num(r.petrol_price) },
-    { label: 'Diesel', open: r.diesel_sales_open, close: r.diesel_sales_close, calcRev: num(r.diesel_litres) * num(r.diesel_price) },
-    { label: 'Kerosene', open: r.kero_sales_open, close: r.kero_sales_close, calcRev: num(r.kero_litres) * num(r.kero_price) },
-  ].filter(f => num(f.open) || num(f.close));
+    { label: 'Petrol', fuel: 'petrol', calcRev: num(r.petrol_litres) * num(r.petrol_price) },
+    { label: 'Diesel', fuel: 'diesel', calcRev: num(r.diesel_litres) * num(r.diesel_price) },
+    { label: 'Kerosene', fuel: 'kero', calcRev: num(r.kero_litres) * num(r.kero_price) },
+  ].filter(f => num(r[f.fuel + '_sales_open']) || num(r[f.fuel + '_sales_close']));
 
-  if (fuelPumpData.length) {
+  if (pumpRows.length || fuelPumpData.length) {
     pumpSec.style.display = 'block';
-    pumpList.innerHTML = fuelPumpData.map(f => {
-      const pumpTotal = Math.max(0, num(f.close) - num(f.open));
+    pumpList.innerHTML = pumpRows.join('') + fuelPumpData.map(f => {
+      const pumpTotal = r[f.fuel + '_pump_sales'] !== undefined ? num(r[f.fuel + '_pump_sales'])
+        : Math.max(0, num(r[f.fuel + '_sales_close']) - num(r[f.fuel + '_sales_open']));
       const variance = r2(f.calcRev - pumpTotal);
       const color = Math.abs(variance) < 1 ? 'var(--acc)' : Math.abs(variance) < 50 ? 'var(--acc2)' : 'var(--red)';
       return `<div class="m-row"><span>${f.label} — Pump Sales Total</span><span>KES ${fmt(pumpTotal)}</span></div>

@@ -431,6 +431,25 @@ class WorkflowTest(ServerCase):
         self.assertEqual(mgr.req("POST", "/api/records", old)[0], 201)                  # older days OK
         self.assertEqual(mgr.req("GET", "/api/users")[0], 403)
 
+    def test_pumps_add_up_and_their_openings_are_checked(self):
+        mgr = Client(self.base).login("kmanager")
+        day = {"report_date": "2026-10-13", "station": "Kisumu Branch", "petrol_price": 200, "diesel_price": 170,
+               "pump_p1_open": 1000, "pump_p1_close": 1100, "pump_p1_sales_open": 5000, "pump_p1_sales_close": 25000,
+               "pump_p2_open": 2000, "pump_p2_close": 2050, "pump_p2_sales_open": 100, "pump_p2_sales_close": 10100,
+               "pump_p3_open": 300,                            # closing not read yet: counts as nothing sold
+               "pump_d1_open": 10, "pump_d1_close": 40}
+        rec = mgr.req("POST", "/api/records", day)[1]["record"]
+        self.assertEqual((rec["petrol_litres"], rec["diesel_litres"], rec["kero_litres"]), (150, 30, 0))
+        self.assertEqual(rec["petrol_pump_sales"], 30000)
+        self.assertEqual(rec["petrol_revenue"], 30000)
+        self.assertEqual((rec["petrol_open"], rec["petrol_close"]), (3300, 3150))   # totals kept for reports
+        nxt = {**day, "report_date": "2026-10-14", "pump_p1_open": 1100, "pump_p1_close": 1200,
+               "pump_p1_sales_open": 25000, "pump_p1_sales_close": 45000,
+               "pump_p2_open": 2049, "pump_p2_close": 2100, "pump_d1_open": 40, "pump_d1_close": 45}
+        mism = mgr.req("POST", "/api/records", nxt)[1]["record"]["opening_mismatches"]
+        self.assertEqual([(m["field"], m["expected"]) for m in mism],
+                         [("pump_p2_open", 2050), ("pump_p2_sales_open", 10100)])
+
     def test_staff_never_see_cost_margin_or_profit(self):
         staff, mgr = Client(self.base).login("kisumu"), Client(self.base).login("kmanager")
         day1 = {**self.KISUMU, "report_date": "2026-10-14"}

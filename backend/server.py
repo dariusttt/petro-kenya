@@ -105,8 +105,16 @@ VAT = 0.16
 EX_P, EX_D, EX_K = 21.95, 7.21, 7.19   # excise per litre
 RL_P, RL_D = 18.00, 13.19              # road levy per litre
 
+# The station's pumps: three petrol, three diesel and one kerosene. Each has its own
+# litres meter and sales (KES) meter; a fuel's totals are the sum over its pumps.
+PUMPS = [("p1", "petrol"), ("p2", "petrol"), ("p3", "petrol"),
+         ("d1", "diesel"), ("d2", "diesel"), ("d3", "diesel"),
+         ("k1", "kero")]
+PUMP_READINGS = ("open", "close", "sales_open", "sales_close")
+PUMP_FIELDS = ["pump_%s_%s" % (pid, x) for pid, _ in PUMPS for x in PUMP_READINGS]
+
 # Raw numeric inputs accepted from clients
-NUM_FIELDS = [
+NUM_FIELDS = PUMP_FIELDS + [
     "petrol_open", "petrol_close", "petrol_price", "petrol_cost",
     "petrol_sales_open", "petrol_sales_close",
     "diesel_open", "diesel_close", "diesel_price", "diesel_cost",
@@ -199,6 +207,30 @@ def days_before(date_str, days):
 
 
 # ── Computation engine — mirrors compute() in frontend/js/app.js ──────────────────────
+def has_pumps(raw, fuel):
+    """True when the record holds per-pump readings for this fuel (older records only have totals)."""
+    return any(num(raw.get("pump_%s_%s" % (pid, x))) for pid, f in PUMPS if f == fuel for x in PUMP_READINGS)
+
+
+def meter_total(raw, fuel, kind):
+    """Litres (kind "") or KES (kind "sales_") a fuel's pumps moved: closing − opening per pump.
+    A pump whose closing reading isn't in yet counts as nothing sold."""
+    if has_pumps(raw, fuel):
+        return r2(sum(max(0.0, num(raw.get("pump_%s_%sclose" % (pid, kind))) - num(raw.get("pump_%s_%sopen" % (pid, kind))))
+                      for pid, f in PUMPS if f == fuel))
+    return r2(max(0.0, num(raw.get(fuel + "_" + kind + "close")) - num(raw.get(fuel + "_" + kind + "open"))))
+
+
+def roll_up_pumps(rec):
+    """Keep each fuel's total meter fields as the sum of its pumps, for reports and older screens."""
+    for fuel in FUELS:
+        if not has_pumps(rec, fuel):
+            continue
+        for x in PUMP_READINGS:
+            rec["%s_%s" % (fuel, x)] = r2(sum(num(rec.get("pump_%s_%s" % (pid, x))) for pid, f in PUMPS if f == fuel))
+    return rec
+
+
 def compute(raw):
     g = lambda k: num(raw.get(k))
     gas_items = raw.get("gas_items") or []
@@ -209,9 +241,7 @@ def compute(raw):
     gas_rev_only = r2(sum(line(i) for i in gas_items if i.get("category") == "Gas"))
     lube_rev_only = r2(sum(line(i) for i in gas_items if i.get("category") == "Lubricant"))
 
-    pL = max(0.0, g("petrol_close") - g("petrol_open"))
-    dL = max(0.0, g("diesel_close") - g("diesel_open"))
-    kL = max(0.0, g("kero_close") - g("kero_open"))
+    pL, dL, kL = (meter_total(raw, f, "") for f in FUELS)
     pRev, dRev, kRev = r2(pL * g("petrol_price")), r2(dL * g("diesel_price")), r2(kL * g("kero_price"))
     pFC, dFC, kFC = r2(pL * g("petrol_cost")), r2(dL * g("diesel_cost")), r2(kL * g("kero_cost"))
     totalL = r2(pL + dL + kL)
@@ -228,7 +258,7 @@ def compute(raw):
 
     pump = {}
     for prefix, rev in (("petrol", pRev), ("diesel", dRev), ("kero", kRev)):
-        sales = max(0.0, r2(g(prefix + "_sales_close") - g(prefix + "_sales_open")))
+        sales = r2(meter_total(raw, prefix, "sales_"))
         pump[prefix + "_pump_sales"] = sales
         pump[prefix + "_pump_variance"] = r2(rev - sales)
 
@@ -325,21 +355,27 @@ def clean_input(body):
         for fuel in FUELS:
             rec[fuel + "_delivered"] = r2(sum(num(d.get("litres_received"))
                                               for d in deliveries if d.get("fuel") == fuel))
-    return rec
+    return roll_up_pumps(rec)
 
 
 # Opening readings that should equal the previous day's closing readings
-OPENING_PAIRS = [(f + "_open", f + "_close") for f in FUELS] + \
-    [(f + "_sales_open", f + "_sales_close") for f in FUELS] + \
-    [(f + "_dip_open", f + "_dip_close") for f in FUELS]
+# (per pump where the previous day has pump readings, else the fuel's totals)
+PUMP_OPENING_PAIRS = [("pump_%s_%sopen" % (pid, k), "pump_%s_%sclose" % (pid, k), fuel)
+                      for pid, fuel in PUMPS for k in ("", "sales_")]
+TOTAL_OPENING_PAIRS = [(f + "_open", f + "_close", f) for f in FUELS] + \
+    [(f + "_sales_open", f + "_sales_close", f) for f in FUELS]
+DIP_OPENING_PAIRS = [(f + "_dip_open", f + "_dip_close") for f in FUELS]
 
 
 def opening_mismatches(rec, previous):
     """Openings that differ from the previous saved day's closings (meter tampering or typos)."""
     if not previous:
         return []
+    pumped = {f: has_pumps(previous, f) for f in FUELS}
+    pairs = [(o, c) for o, c, f in PUMP_OPENING_PAIRS if pumped[f]] + \
+        [(o, c) for o, c, f in TOTAL_OPENING_PAIRS if not pumped[f]] + DIP_OPENING_PAIRS
     out = []
-    for open_f, close_f in OPENING_PAIRS:
+    for open_f, close_f in pairs:
         expected, entered = num(previous.get(close_f)), num(rec.get(open_f))
         if expected > 0 and abs(expected - entered) > 0.005:
             out.append({"field": open_f, "expected": expected, "entered": entered,

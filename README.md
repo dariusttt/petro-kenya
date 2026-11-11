@@ -92,7 +92,10 @@ Back up the database by downloading the `.sqlite3` file, or use **📥 Export CS
 - **💲 Fuel Prices** (menu): admins set selling and cost prices per branch from a
   date. Those prices fill in automatically and can't be typed over; the server
   applies them on every save. Fuels without a set price can still be typed.
-- **Opening readings** (meters and dips) are filled from the previous saved day's
+- **Pumps:** three petrol (P1–P3), three diesel (D1–D3) and one kerosene (K1). Each pump has
+  its own litres and sales (KES) meters; a fuel's litres and sales are the sum over its pumps.
+  The list is `PUMPS` in `backend/server.py` and `frontend/js/app.js` (and `preview/mock-api.js`).
+- **Opening readings** (each pump's meters and the dips) are filled from the previous saved day's
   closing readings. If someone changes them, the page warns before saving and the
   record is flagged ⚠️ in Records and in its details.
 - **🚚 Fuel Deliveries** (Dips page): log supplier, delivery note, truck, litres
