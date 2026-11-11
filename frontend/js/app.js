@@ -834,7 +834,8 @@ function deleteReceipt(id) {
 }
 
 const receiptTile = (r, canDelete) => {
-  const src = '/api/uploads/' + encodeURIComponent(r.upload_id);
+  // The website preview keeps photos in the browser and supplies its own address for them
+  const src = window.pkUploadUrl ? window.pkUploadUrl(r.upload_id) : '/api/uploads/' + encodeURIComponent(r.upload_id);
   return `<div class="receipt">
     <a href="${src}" target="_blank" rel="noopener"><img src="${src}" alt="${esc(r.label)}" loading="lazy"></a>
     <div class="cap"><span title="${esc(r.label)}">${esc(r.label)}${r.amount ? ' · KES ' + fmt(r.amount) : ''}</span>

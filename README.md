@@ -191,6 +191,14 @@ profit, VAT, excise, road levy, dip and pump variances — whenever a record is 
 | GET · POST | `/api/users` | List / add users (admin) |
 | DELETE | `/api/users/{id}` · POST `/api/users/{id}/password` | Remove user · reset password (admin) |
 
+## Website preview
+
+`python3 preview/build_preview.py` builds one self-contained page of the app that runs
+with no server: `preview/mock-api.js` stands in for the backend inside the browser, with
+the same rules and marked example data, and one-tap sign-ins for owner, branch manager
+and pump staff. It's for showing the app; everything entered stays in that browser.
+Printing, CSV downloads and email don't work there.
+
 ## Tests
 
 ```bash
