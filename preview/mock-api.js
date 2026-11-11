@@ -133,6 +133,10 @@
   const OPEN_PAIRS = FUELS.flatMap(f => [[f + '_open', f + '_close'], [f + '_sales_open', f + '_sales_close'], [f + '_dip_open', f + '_dip_close']]);
   function prepare(db, rec, existing, user) {
     const prices = effectivePrices(db, rec.station, rec.report_date);
+    if (user && user.role === 'staff') {      // staff never see or send cost prices
+      const from = existing || previous(db, rec.station, rec.report_date) || {};
+      FUELS.forEach(f => { rec[f + '_cost'] = num(from[f + '_cost']); });
+    }
     Object.entries(prices).forEach(([f, p]) => { rec[f + '_price'] = p.sell; rec[f + '_cost'] = p.cost; });
     rec.prices_set_by_owner = Object.keys(prices).sort();
     const prev = previous(db, rec.station, rec.report_date);
@@ -338,6 +342,16 @@
       reference: 'RGK7ABC123', station: 'Westlands Branch', by_user: 'mary', at: nowIso(), voided_at: null });
     save();
     return db;
+  }
+
+  // Cost, margin and profit figures are taken out of everything pump staff receive
+  const PRIVATE = new Set(['cost', 'total_fuel_cost', 'total_cost', 'net_profit', 'profit_margin', 'profit_per_litre',
+    'avg_daily_profit', ...FUELS.flatMap(f => [f + '_cost', f + '_margin'])]);
+  function hidePrivate(v) {
+    if (Array.isArray(v)) return v.filter(x => !(x && typeof x === 'object' && (PRIVATE.has(x.field) || ('label' in x && PRIVATE.has(x.key)))))
+      .map(hidePrivate);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).filter(([k]) => !PRIVATE.has(k)).map(([k, x]) => [k, hidePrivate(x)]));
+    return v;
   }
 
   // ── Router ──────────────────────────────────────────────────────────────────
@@ -549,6 +563,8 @@
     let status = 200, data;
     try {
       data = handle(method, url.pathname.replace(/\/$/, ''), q, body);
+      const viewer = currentUser(load());
+      if (viewer && viewer.role === 'staff') data = hidePrivate(data);
       if (method === 'POST' && /\/api\/(records|customers|users|prices|uploads)$/.test(url.pathname) && data && data.created !== false) status = 201;
       save();
     } catch (e) {

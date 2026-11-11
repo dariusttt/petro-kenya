@@ -80,6 +80,8 @@ Back up the database by downloading the `.sqlite3` file, or use **📥 Export CS
 - Deleting moves a record to the **🗑️ Bin** (Records page). Only admins can restore it
   or delete it for good; its history is kept even then.
 - Staff can only change today's and yesterday's records; older days are locked.
+- Staff never see cost prices, margins or profit — not on screen, in reports or downloads, nor in what the
+  server sends them. When they save a day the cost prices come from the owner's prices (or the day before).
   Nobody can save a future date.
 
 **Daily workflow**

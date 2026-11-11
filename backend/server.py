@@ -140,6 +140,27 @@ CSV_COLS = [
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+# Cost, margin and profit figures: only managers and admins see them, never pump staff
+PRIVATE_KEYS = frozenset(
+    ["cost", "total_fuel_cost", "total_cost", "net_profit", "profit_margin", "profit_per_litre",
+     "avg_daily_profit"] + [f + "_cost" for f in FUELS] + [f + "_margin" for f in FUELS])
+
+
+def hide_private(value):
+    """Copy of an API payload with every cost, margin and profit figure taken out.
+    Change-history entries and report columns about those fields go too."""
+    if isinstance(value, dict):
+        return {k: hide_private(v) for k, v in value.items() if k not in PRIVATE_KEYS}
+    if isinstance(value, list):
+        return [hide_private(v) for v in value
+                if not (isinstance(v, dict) and (v.get("field") in PRIVATE_KEYS
+                                                 or ("label" in v and v.get("key") in PRIVATE_KEYS)))]
+    return value
+
+
+def sees_private(user):
+    return bool(user) and user.get("role") != "staff"
+
 # Fields compared between versions in a record's change history
 HISTORY_FIELDS = ["report_date", "station"] + NUM_FIELDS + [
     f for f in TEXT_FIELDS if f != "operator"] + LIST_FIELDS
@@ -627,12 +648,13 @@ def analytics(records):
     }
 
 
-def to_csv(records):
+def to_csv(records, private=True):
+    cols = CSV_COLS if private else [c for c in CSV_COLS if c not in PRIVATE_KEYS]
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")
-    w.writerow(CSV_COLS)
+    w.writerow(cols)
     for r in records:
-        w.writerow([csv_cell(r.get(c)) for c in CSV_COLS])
+        w.writerow([csv_cell(r.get(c)) for c in cols])
     return buf.getvalue()
 
 
@@ -935,6 +957,9 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _json(self, status, payload, extra=None):
+        viewer = getattr(self, "_viewer", None)
+        if viewer and not sees_private(viewer):
+            payload = hide_private(payload)
         self._send(status, json.dumps(payload).encode("utf-8"), extra=extra)
 
     def _body(self, max_bytes=MAX_BODY):
@@ -1025,6 +1050,12 @@ class Handler(BaseHTTPRequestHandler):
         """Server-side rules applied to every save: owner-set prices win over typed ones,
         openings are checked against the previous day, and the operator is stamped."""
         prices = self.store.effective_prices(rec["station"], rec["report_date"])
+        if not sees_private(user):
+            # Staff never see cost prices, so they can't send them: keep the day's own
+            # costs, else carry the previous day's forward (owner prices still win below)
+            prev = existing or self.store.previous(rec["station"], rec["report_date"]) or {}
+            for fuel in FUELS:
+                rec[fuel + "_cost"] = num(prev.get(fuel + "_cost"))
         for fuel, price in prices.items():
             rec[fuel + "_price"], rec[fuel + "_cost"] = price["sell"], price["cost"]
         rec["prices_set_by_owner"] = sorted(prices)
@@ -1054,6 +1085,7 @@ class Handler(BaseHTTPRequestHandler):
         path = url.path.rstrip("/") or "/"
         q = {k: v[-1] for k, v in parse_qs(url.query).items()}
         m = self.command
+        self._viewer = None
         try:
             if not path.startswith("/api"):
                 if m not in ("GET", "HEAD"):
@@ -1076,6 +1108,7 @@ class Handler(BaseHTTPRequestHandler):
             user = self.auth.user_for(self._token())
             if not user:
                 raise ApiError(HTTPStatus.UNAUTHORIZED, "Please sign in")
+            self._viewer = user
             return self._route(m, path, q, user)
         except (ApiError, business.Error) as e:
             self._json(e.status, {"error": e.message})
@@ -1131,7 +1164,7 @@ class Handler(BaseHTTPRequestHandler):
             station = self._station_scope(user, q.get("station"))
             name = "PetroKenya_%s_%s.csv" % (
                 (station or "All-Branches").replace(" ", "-"), datetime.now().strftime("%Y-%m-%d"))
-            return self._send(HTTPStatus.OK, to_csv(self.store.list(station=station)).encode("utf-8"),
+            return self._send(HTTPStatus.OK, to_csv(self.store.list(station=station), sees_private(user)).encode("utf-8"),
                               "text/csv; charset=utf-8",
                               {"Content-Disposition": 'attachment; filename="%s"' % name})
 
@@ -1349,6 +1382,8 @@ class Handler(BaseHTTPRequestHandler):
             station = self._station_scope(user, q.get("station"))
             recs = self.store.list(station, date_from=month + "-01", date_to=month + "-31")
             report = business.monthly_report(recs, month)
+            if not sees_private(user):
+                report = hide_private(report)
             if path.endswith(".csv"):
                 buf = io.StringIO()
                 w = csv.writer(buf, lineterminator="\n")

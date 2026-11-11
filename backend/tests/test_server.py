@@ -431,6 +431,43 @@ class WorkflowTest(ServerCase):
         self.assertEqual(mgr.req("POST", "/api/records", old)[0], 201)                  # older days OK
         self.assertEqual(mgr.req("GET", "/api/users")[0], 403)
 
+    def test_staff_never_see_cost_margin_or_profit(self):
+        staff, mgr = Client(self.base).login("kisumu"), Client(self.base).login("kmanager")
+        day1 = {**self.KISUMU, "report_date": "2026-10-14"}
+        rid = mgr.req("POST", "/api/records", day1)[1]["record"]["id"]
+        hidden = ("petrol_cost", "diesel_cost", "petrol_margin", "total_fuel_cost", "total_cost",
+                  "net_profit", "profit_margin", "profit_per_litre")
+        rec = staff.req("GET", "/api/records/%d" % rid)[1]
+        self.assertTrue(rec["gross_revenue"] > 0)
+        self.assertFalse([k for k in hidden if k in rec])
+        self.assertIn("net_profit", mgr.req("GET", "/api/records/%d" % rid)[1])
+        # Staff save today's day without cost prices: the previous day's costs carry on,
+        # so the owner's profit figures stay right
+        status, res, _ = staff.req("POST", "/api/records", {**self.KISUMU, "report_date": "2026-10-15",
+                                                            "petrol_cost": 1, "diesel_cost": 1})
+        self.assertEqual(status, 201)
+        self.assertNotIn("petrol_cost", res["record"])
+        full = mgr.req("GET", "/api/records/%d" % res["record"]["id"])[1]
+        self.assertEqual((full["petrol_cost"], full["diesel_cost"]), (174, 157))
+        self.assertNotIn("net_profit", staff.req("GET", "/api/records")[1]["records"][0])
+        self.assertNotIn("net_profit", staff.req("GET", "/api/analytics")[1]["totals"])
+        report = staff.req("GET", "/api/reports/monthly?month=2026-10")[1]
+        self.assertNotIn("net_profit", [f["key"] for f in report["fields"]])
+        self.assertNotIn("net_profit", report["totals"])
+        self.assertNotIn("net_profit", staff.req("GET", "/api/export.csv")[1].splitlines()[0])
+        self.assertNotIn("net_profit", staff.req("GET", "/api/reports/monthly.csv?month=2026-10")[1])
+        self.admin.req("POST", "/api/prices", {"stations": ["Kisumu Branch"], "effective_from": "2026-10-01",
+                                               "petrol_sell": 190, "petrol_cost": 175})
+        prices = staff.req("GET", "/api/prices?station=Kisumu+Branch")[1]["prices"]
+        self.assertEqual(prices["petrol"].get("sell"), 190)
+        self.assertNotIn("cost", prices["petrol"])
+        self.assertFalse(any("cost" in p for p in staff.req("GET", "/api/prices/history")[1]["prices"]))
+        mgr.req("POST", "/api/records", {**day1, "exp_wages": 5})
+        changes = [c["field"] for h in staff.req("GET", "/api/records/%d/history" % rid)[1]["history"]
+                   for c in h["changes"]]
+        self.assertIn("exp_wages", changes)
+        self.assertFalse([c for c in changes if c in hidden])
+
     def test_approved_day_is_locked_until_an_admin_reopens_it(self):
         staff, mgr = Client(self.base).login("kisumu"), Client(self.base).login("kmanager")
         rid = staff.req("POST", "/api/records", self.KISUMU)[1]["record"]["id"]
@@ -471,7 +508,8 @@ class WorkflowTest(ServerCase):
         self.assertNotIn("diesel", prices)                    # diesel left blank, not set
         self.assertEqual(staff.req("GET", "/api/prices?date=2026-10-13")[1]["prices"], {})
         rec = staff.req("POST", "/api/records", {**self.KISUMU, "petrol_price": 100})[1]["record"]
-        self.assertEqual((rec["petrol_price"], rec["petrol_cost"]), (190.5, 175))
+        self.assertEqual(rec["petrol_price"], 190.5)
+        self.assertEqual(self.admin.req("GET", "/api/records/%d" % rec["id"])[1]["petrol_cost"], 175)
         self.assertEqual(rec["diesel_price"], 172)            # typed price kept where none is set
         self.assertEqual(rec["prices_set_by_owner"], ["petrol"])
         self.assertEqual(rec["gross_revenue"], round(100 * 190.5 + 50 * 172 + 2000, 2))

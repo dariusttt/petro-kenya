@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PetroKenya">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/styles.css?v=11">
+<link rel="stylesheet" href="css/styles.css?v=12">
 </head>
 <body>
 
@@ -112,7 +112,7 @@
       <div class="card-unit">Operating Costs</div>
       <div class="card-sub" id="cExpSub">—</div>
     </div>
-    <div class="card" id="profCard" style="--c:#b57bee">
+    <div class="card priv" id="profCard" style="--c:#b57bee">
       <div class="card-lbl">Net Profit</div>
       <div class="card-val" id="cProfit">KES 0</div>
       <div class="card-unit">Daily Net</div>
@@ -128,7 +128,7 @@
       <div class="card-lbl">Revenue / Litre</div>
       <div class="card-val" id="cRevPerL">KES 0</div>
       <div class="card-unit">Efficiency</div>
-      <div class="card-sub" id="cProfPerL">Profit/L: KES 0</div>
+      <div class="card-sub priv" id="cProfPerL">Profit/L: KES 0</div>
     </div>
   </div>
 
@@ -183,13 +183,13 @@
             <input type="number" id="pSalesClose" placeholder="0.00" step="0.01" oninput="calc()"></div>
           <div class="ig"><label>Selling Price /L (KES)</label>
             <input type="number" id="pPrice" placeholder="189.50" step="0.01" oninput="calc()"></div>
-          <div class="ig"><label>Cost Price /L (KES)</label>
+          <div class="ig priv"><label>Cost Price /L (KES)</label>
             <input type="number" id="pCost" placeholder="174.00" step="0.01" oninput="calc()"></div>
         </div>
         <div class="fuel-total">
           <span>Litres: <b id="pLit">0.00 L</b></span>
           <span>Revenue: <b id="pRev">KES 0</b></span>
-          <span>Margin: <b id="pMgn">KES 0</b></span>
+          <span class="priv">Margin: <b id="pMgn">KES 0</b></span>
         </div>
         <div class="fuel-total" id="pPumpCheckRow" style="display:none">
           <span>Pump Sales Total: <b id="pPumpSales">KES 0</b></span>
@@ -214,13 +214,13 @@
             <input type="number" id="dSalesClose" placeholder="0.00" step="0.01" oninput="calc()"></div>
           <div class="ig"><label>Selling Price /L (KES)</label>
             <input type="number" id="dPrice" placeholder="172.00" step="0.01" oninput="calc()"></div>
-          <div class="ig"><label>Cost Price /L (KES)</label>
+          <div class="ig priv"><label>Cost Price /L (KES)</label>
             <input type="number" id="dCost" placeholder="157.00" step="0.01" oninput="calc()"></div>
         </div>
         <div class="fuel-total">
           <span>Litres: <b id="dLit">0.00 L</b></span>
           <span>Revenue: <b id="dRev">KES 0</b></span>
-          <span>Margin: <b id="dMgn">KES 0</b></span>
+          <span class="priv">Margin: <b id="dMgn">KES 0</b></span>
         </div>
         <div class="fuel-total" id="dPumpCheckRow" style="display:none">
           <span>Pump Sales Total: <b id="dPumpSales">KES 0</b></span>
@@ -245,13 +245,13 @@
             <input type="number" id="kSalesClose" placeholder="0.00" step="0.01" oninput="calc()"></div>
           <div class="ig"><label>Selling Price /L (KES)</label>
             <input type="number" id="kPrice" placeholder="152.00" step="0.01" oninput="calc()"></div>
-          <div class="ig"><label>Cost Price /L (KES)</label>
+          <div class="ig priv"><label>Cost Price /L (KES)</label>
             <input type="number" id="kCost" placeholder="138.00" step="0.01" oninput="calc()"></div>
         </div>
         <div class="fuel-total">
           <span>Litres: <b id="kLit">0.00 L</b></span>
           <span>Revenue: <b id="kRev">KES 0</b></span>
-          <span>Margin: <b id="kMgn">KES 0</b></span>
+          <span class="priv">Margin: <b id="kMgn">KES 0</b></span>
         </div>
         <div class="fuel-total" id="kPumpCheckRow" style="display:none">
           <span>Pump Sales Total: <b id="kPumpSales">KES 0</b></span>
@@ -267,7 +267,7 @@
         <div class="pv" id="pvRev" style="color:var(--acc);font-size:1.5rem">KES 0</div>
         <div class="pm">Fuel + Gas/Lube revenue</div>
       </div>
-      <div class="pbox-item">
+      <div class="pbox-item priv">
         <div class="pl">Fuel Cost</div>
         <div class="pv" id="pvFuelCost" style="color:var(--red);font-size:1.5rem">− KES 0</div>
         <div class="pm">Cost of fuel sold</div>
@@ -277,13 +277,13 @@
         <div class="pv" id="pvExpenses" style="color:var(--red);font-size:1.5rem">− KES 0</div>
         <div class="pm">Subtracted from sales</div>
       </div>
-      <div class="pbox-item">
+      <div class="pbox-item priv">
         <div class="pl">Net Profit</div>
         <div class="pv" id="pvProfit" style="color:var(--acc)">KES 0</div>
         <div class="pm" id="pvMargin">Margin: 0%</div>
       </div>
     </div>
-    <div style="font-family:var(--mono);font-size:.72rem;color:var(--mut);text-align:center;margin-top:8px">
+    <div class="priv" style="font-family:var(--mono);font-size:.72rem;color:var(--mut);text-align:center;margin-top:8px">
       Total Sales − Fuel Cost − Expenses = Net Profit
     </div>
     <div class="var-bar ok" id="varBar">✅ Variance: KES 0.00 — Balanced</div>
@@ -573,7 +573,7 @@
     <div style="background:var(--s1);border:1px solid var(--brd);border-radius:9px;padding:14px 18px;font-family:var(--mono);font-size:.78rem;display:flex;gap:24px;flex-wrap:wrap">
       <span>Total Expenses: <b id="eTotalDisp" style="color:var(--red)">KES 0</b></span>
       <span>Revenue/L: <b id="eRevPerL" style="color:var(--acc2)">KES 0</b></span>
-      <span>Profit/L: <b id="eProfPerL" style="color:var(--acc)">KES 0</b></span>
+      <span class="priv">Profit/L: <b id="eProfPerL" style="color:var(--acc)">KES 0</b></span>
     </div>
     <div style="background:var(--s1);border:1px solid var(--brd);border-radius:9px;padding:14px 18px;margin-top:10px;font-family:var(--mono);font-size:.78rem;display:flex;gap:16px;flex-wrap:wrap;align-items:center">
       <span>Total Sales: <b id="eSalesRef" style="color:var(--acc2)">KES 0</b></span>
@@ -732,7 +732,7 @@
     <div class="box" style="margin-bottom:14px">
       <div class="box-title">💲 Prices in force <span class="price-tag" id="pricesFor">—</span></div>
       <div class="tbl-wrap"><table>
-        <thead><tr><th>Fuel</th><th>Selling /L</th><th>Cost /L</th><th>Since</th><th>Set by</th></tr></thead>
+        <thead><tr><th>Fuel</th><th>Selling /L</th><th class="priv">Cost /L</th><th>Since</th><th>Set by</th></tr></thead>
         <tbody id="pricesNow"></tbody>
       </table></div>
       <div class="m-sub" style="margin:10px 0 0">Prices set here fill in automatically on the Fuel Entry page and can't be typed over.
@@ -816,7 +816,7 @@
     <div class="box">
       <div class="box-title">Day by Day</div>
       <div class="tbl-wrap"><table>
-        <thead><tr><th>Date</th><th>Branch</th><th>Litres</th><th>Sales</th><th>Profit</th><th>Status</th></tr></thead>
+        <thead><tr><th>Date</th><th>Branch</th><th>Litres</th><th>Sales</th><th class="priv">Profit</th><th>Status</th></tr></thead>
         <tbody id="repDaily"></tbody>
       </table></div>
     </div>
@@ -829,7 +829,7 @@
         <div class="stag">Revenue — Last 7 Days</div>
         <div class="chart-bars" id="chartRev"></div>
       </div>
-      <div class="box">
+      <div class="box priv">
         <div class="stag">Net Profit — Last 7 Days</div>
         <div class="chart-bars" id="chartProfit"></div>
       </div>
@@ -870,7 +870,7 @@
           <th>#</th><th>Date</th><th>Station</th><th>Operator</th>
           <th>P-Litres</th><th>D-Litres</th><th>Total L</th>
           <th>Sales KES</th><th>M-Pesa</th><th>Cash</th>
-          <th>Expenses</th><th>Profit</th><th>VAT</th><th>Tax Total</th><th>Status</th><th>Del</th>
+          <th>Expenses</th><th class="priv">Profit</th><th>VAT</th><th>Tax Total</th><th>Status</th><th>Del</th>
         </tr></thead>
         <tbody id="recBody">
           <tr><td colspan="15" style="text-align:center;padding:32px;color:var(--mut);font-family:var(--mono);font-size:.76rem">No records yet — save a daily entry first.</td></tr>
@@ -990,7 +990,7 @@
       </div>
     </div>
 
-    <div class="m-sec">
+    <div class="m-sec priv">
       <div class="m-sec-ttl">📈 Profit & Loss</div>
       <div class="m-row"><span>Gross Revenue</span><span id="rdGross">—</span></div>
       <div class="m-row"><span>Total Cost</span><span id="rdTotalCost">—</span></div>
@@ -1252,7 +1252,7 @@
 
 <div id="toast"></div>
 
-<script src="js/i18n.js?v=11"></script>
-<script src="js/app.js?v=11"></script>
+<script src="js/i18n.js?v=12"></script>
+<script src="js/app.js?v=12"></script>
 </body>
 </html>

@@ -226,7 +226,11 @@ async function logout() {
 const displayName = u => (u && (u.display_name || u.full_name || u.username)) || '';
 
 // Lock the UI to what this user is allowed to do
+// Cost prices, margins and profit are for managers and admins, not pump staff
+const seesProfit = () => !!USER && USER.role !== 'staff';
+
 function applyUserToUI() {
+  document.body.classList.toggle('no-profit', !seesProfit());
   const isAdmin = USER && USER.role === 'admin';
   const fixed = USER && (USER.role === 'staff' || USER.role === 'manager') && USER.station;
   $('userBtn').textContent = '👤 ' + (USER ? displayName(USER) : 'Sign in');
@@ -1092,21 +1096,23 @@ async function renderReport() {
   Object.assign(labels, { days: 'Days recorded', approved_days: 'Days approved', flagged_days: 'Days flagged ⚠️' });
   const t = rep.totals;
   $('repCards').innerHTML = [
-    ['Total Sales', 'KES ' + fmt(t.gross_revenue), '#3ecf32'], ['Net Profit', 'KES ' + fmt(t.net_profit), '#b57bee'],
+    ['Total Sales', 'KES ' + fmt(t.gross_revenue), '#3ecf32'], ...(seesProfit() ? [['Net Profit', 'KES ' + fmt(t.net_profit), '#b57bee']] : []),
     ['Litres Sold', fmt(t.total_litres) + ' L', '#5bb8e0'], ['Days Approved', `${t.approved_days} of ${t.days}`, '#f5c518'],
   ].map(([l, v, col]) => `<div class="card" style="--c:${col}"><div class="card-lbl">${l}</div><div class="card-val">${esc(v)}</div></div>`).join('');
   const cell = (row, k) => {
     const v = row[k];
     return ['days', 'approved_days', 'flagged_days'].includes(k) ? v : fmt(v);
   };
-  $('repHead').innerHTML = '<tr><th>Branch</th>' + REPORT_COLUMNS.map(k => `<th>${esc(labels[k] || k)}</th>`).join('') + '</tr>';
+  // Columns the server left out (profit, for pump staff) aren't shown
+  const columns = REPORT_COLUMNS.filter(k => ['days', 'approved_days', 'flagged_days'].includes(k) || k in labels);
+  $('repHead').innerHTML = '<tr><th>Branch</th>' + columns.map(k => `<th>${esc(labels[k] || k)}</th>`).join('') + '</tr>';
   $('repBody').innerHTML = rep.branches.length
-    ? rep.branches.map(b => '<tr><td translate="no">' + esc(b.station) + '</td>' + REPORT_COLUMNS.map(k => `<td class="num">${cell(b, k)}</td>`).join('') + '</tr>').join('')
-      + (rep.branches.length > 1 ? '<tr class="total"><td>All branches</td>' + REPORT_COLUMNS.map(k => `<td class="num">${cell(t, k)}</td>`).join('') + '</tr>' : '')
-    : `<tr><td colspan="${REPORT_COLUMNS.length + 1}" style="color:var(--mut)">No records saved for this month.</td></tr>`;
+    ? rep.branches.map(b => '<tr><td translate="no">' + esc(b.station) + '</td>' + columns.map(k => `<td class="num">${cell(b, k)}</td>`).join('') + '</tr>').join('')
+      + (rep.branches.length > 1 ? '<tr class="total"><td>All branches</td>' + columns.map(k => `<td class="num">${cell(t, k)}</td>`).join('') + '</tr>' : '')
+    : `<tr><td colspan="${columns.length + 1}" style="color:var(--mut)">No records saved for this month.</td></tr>`;
   $('repDaily').innerHTML = rep.daily.map(d => `<tr><td>${esc(d.date)}</td><td translate="no">${esc(d.station)}</td>
     <td class="num">${fmt(d.total_litres)}</td><td class="num">KES ${fmt(d.gross_revenue)}</td>
-    <td class="num ${d.net_profit < 0 ? 'bad' : ''}">KES ${fmt(d.net_profit)}</td>
+    <td class="num priv ${d.net_profit < 0 ? 'bad' : ''}">KES ${fmt(d.net_profit)}</td>
     <td>${d.approved ? '<span class="badge bg">✅ Approved</span>' : '<span class="badge by">Open</span>'}</td></tr>`).join('')
     || '<tr><td colspan="6" style="color:var(--mut)">No days recorded.</td></tr>';
 }
@@ -1339,7 +1345,7 @@ async function applyOwnerPrices() {
     ids.forEach((id, i) => {
       const el = $(id);
       if (p) {
-        el.value = i === 0 ? p.sell : p.cost;
+        el.value = (i === 0 ? p.sell : p.cost) ?? '';
         el.readOnly = true;
         el.classList.add('owner-price');
         el.title = 'Set by the owner from ' + p.effective_from;
@@ -1367,7 +1373,7 @@ async function renderPricesPage() {
     body.innerHTML = Object.keys(FUEL_NAMES).map(f => {
       const p = prices[f];
       return `<tr><td>${FUEL_NAMES[f]}</td>${p
-        ? `<td>KES ${fmt(p.sell)}</td><td>KES ${fmt(p.cost)}</td><td>${esc(p.effective_from)}</td><td>${esc(p.set_by)}</td>`
+        ? `<td>KES ${fmt(p.sell)}</td><td class="priv">KES ${fmt(p.cost)}</td><td>${esc(p.effective_from)}</td><td>${esc(p.set_by)}</td>`
         : '<td colspan="4" style="color:var(--mut)">Not set — typed in on Fuel Entry</td>'}</tr>`;
     }).join('');
   } catch (e) {
@@ -1938,7 +1944,7 @@ function loadRecs() {
         <td style="color:#00a651">KES ${fmt(mpesa)}</td>
         <td>KES ${fmt(cash)}</td>
         <td style="color:var(--red)">KES ${fmt(expenses)}</td>
-        <td><span class="badge ${profit >= 0 ? 'bg' : 'br'}">KES ${fmt(profit)}</span></td>
+        <td class="priv"><span class="badge ${profit >= 0 ? 'bg' : 'br'}">KES ${fmt(profit)}</span></td>
         <td>KES ${fmt(vat)}</td>
         <td style="color:var(--acc2)">KES ${fmt(tax)}</td>
         <td>${r.approved_at ? '<span class="badge bg">✅ Approved</span>' : '<span class="badge by">Open</span>'}${(r.opening_mismatches || []).length ? ' <span class="badge br" title="Openings differ from the previous day">⚠️</span>' : ''}</td>
@@ -2232,8 +2238,8 @@ function renderAnalytics() {
     ['Days Recorded',      totals.days],
     ['Total Revenue',      'KES ' + fmt(totals.rev)],
     ['Total Litres Sold',  fmt(totals.lit) + ' L'],
-    ['Total Net Profit',   'KES ' + fmt(totals.profit)],
-    ['Avg Daily Profit',   'KES ' + fmt(totals.days > 0 ? totals.profit / totals.days : 0)],
+    ...(seesProfit() ? [['Total Net Profit', 'KES ' + fmt(totals.profit)],
+      ['Avg Daily Profit', 'KES ' + fmt(totals.days > 0 ? totals.profit / totals.days : 0)]] : []),
     ['Total M-Pesa',       'KES ' + fmt(totals.mpesa)],
     ['Total Cash',         'KES ' + fmt(totals.cash)],
     ['Total KRA Tax',      'KES ' + fmt(totals.tax)],
@@ -2303,7 +2309,7 @@ $('accountOverlay').addEventListener('click', e => { if(e.target===$('accountOve
 // ── Export CSV ────────────────────────────────────────────────────────────────
 function exportCSV() {
   if (!RECS.length) { toast('⚠️ No records to export yet', true); return; }
-  const cols = [
+  let cols = [
     'report_date','station','operator',
     'petrol_litres','diesel_litres','kero_litres','total_litres',
     'gross_revenue','mpesa_amount','cash_amount','credit_amount','card_amount',
@@ -2320,6 +2326,7 @@ function exportCSV() {
       ? '"' + s.replace(/"/g, '""') + '"'
       : s;
   };
+  if (!seesProfit()) cols = cols.filter(c => !['net_profit', 'profit_margin'].includes(c));
   const hdr  = cols.join(',');
   const rows  = RECS.map(r => cols.map(c => escape(r[c])).join(','));
   const blob  = new Blob([hdr + '\n' + rows.join('\n')], { type: 'text/csv' });

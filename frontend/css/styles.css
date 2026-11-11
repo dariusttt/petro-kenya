@@ -364,3 +364,12 @@ input[type=file]{color:var(--mut);font-family:var(--mono);font-size:.76rem;max-w
   font-family:var(--mono);font-size:.74rem;color:var(--mut)}
 .lang-switch button{background:none;border:none;color:var(--acc);font:inherit;cursor:pointer;padding:4px 2px;text-decoration:underline}
 html[lang="sw"] .lang-switch button[onclick*="'sw'"],html[lang="en"] .lang-switch button[onclick*="'en'"]{color:var(--txt);text-decoration:none;font-weight:600}
+
+/* Pump staff don't see cost prices, margins or profit */
+body.no-profit .priv{display:none!important}
+body.no-profit .pbox-4{grid-template-columns:1fr 1fr}
+body.no-profit .pbox-4 .pbox-item+.pbox-item{border-left:1px solid var(--brd);border-top:none;padding-top:0}
+@media (max-width:620px){
+  body.no-profit .pbox-4{grid-template-columns:1fr}
+  body.no-profit .pbox-4 .pbox-item+.pbox-item{border-left:none;border-top:1px solid var(--brd);padding-top:16px}
+}
