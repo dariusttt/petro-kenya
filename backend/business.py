@@ -13,6 +13,7 @@ import secrets
 import smtplib
 import sys
 import threading
+from datetime import datetime
 from email.message import EmailMessage
 from http import HTTPStatus
 
@@ -54,7 +55,6 @@ def r2(v):
 
 
 def nice_date(d):
-    from datetime import datetime
     try:
         return datetime.strptime(d, "%Y-%m-%d").strftime("%a %d %b %Y")
     except (TypeError, ValueError):
@@ -335,7 +335,7 @@ class Credit:
         for key, limit in (("name", 80), ("company", 120), ("phone", 30)):
             if key in body or not partial:
                 out[key] = " ".join(str(body.get(key) or "").split())[:limit]
-        if not partial and not out["name"]:
+        if "name" in out and not out["name"]:
             raise Error(HTTPStatus.BAD_REQUEST, "Enter the customer's name")
         if "credit_limit" in body:
             lim = num(body.get("credit_limit"))
@@ -439,8 +439,12 @@ class Credit:
         if amount <= 0 or amount > 100_000_000:
             raise Error(HTTPStatus.BAD_REQUEST, "Enter the amount paid")
         paid_on = str(body.get("paid_on") or today)
-        if len(paid_on) != 10 or paid_on > today:
+        try:
+            datetime.strptime(paid_on, "%Y-%m-%d")
+        except ValueError:
             raise Error(HTTPStatus.BAD_REQUEST, "Check the payment date")
+        if paid_on > today:
+            raise Error(HTTPStatus.BAD_REQUEST, "A payment can't be dated in the future")
         method = str(body.get("method") or "M-Pesa")[:30]
         with self.store.lock:
             cur = self.store.conn.execute(

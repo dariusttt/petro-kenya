@@ -1147,7 +1147,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._station_scope(user, rec["station"])
                 existing = self.store.list(rec["station"], rec["report_date"])
                 existing = existing[0] if existing else None
-                self._check_editable(user, rec["report_date"], existing)
+                # An approved day stays locked even while it sits in the bin
+                self._check_editable(user, rec["report_date"],
+                                     existing or self.store.find_day(rec["station"], rec["report_date"]))
                 self._prepare_record(rec, existing, user)
                 saved, created = self.store.save(rec, by=user["username"])
                 self.alerts.sync_record(saved, now_iso())

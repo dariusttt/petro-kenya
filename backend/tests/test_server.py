@@ -449,6 +449,15 @@ class WorkflowTest(ServerCase):
         other = self.admin.req("POST", "/api/records", SAMPLE)[1]["record"]["id"]
         self.assertEqual(mgr.req("POST", "/api/records/%d/approve" % other, {})[0], 404)  # other branch
 
+    def test_binned_approved_day_cannot_be_overwritten(self):
+        mgr, staff = Client(self.base).login("kmanager"), Client(self.base).login("kisumu")
+        rid = staff.req("POST", "/api/records", self.KISUMU)[1]["record"]["id"]
+        mgr.req("POST", "/api/records/%d/approve" % rid, {})
+        self.assertEqual(self.admin.req("DELETE", "/api/records?station=Kisumu%20Branch")[1]["deleted"], 1)
+        self.assertEqual(staff.req("POST", "/api/records", {**self.KISUMU, "cash_amount": 1})[0], 409)
+        self.assertEqual(self.admin.req("POST", "/api/bin/%d/restore" % rid, {})[0], 200)
+        self.assertEqual(self.admin.req("GET", "/api/records/%d" % rid)[1]["cash_amount"], 7550)
+
     def test_owner_prices_override_typed_prices(self):
         staff = Client(self.base).login("kisumu")
         body = {"stations": ["Kisumu Branch", "Nakuru Branch"], "effective_from": "2026-10-14",
@@ -594,6 +603,9 @@ class BusinessTest(ServerCase):
         self.assertEqual(self.admin.req("PUT", "/api/customers/%d" % cust["id"],
                                         {"credit_limit": 15000})[1]["customer"]["credit_limit"], 15000)
         self.assertEqual(staff.req("POST", "/api/customers", {"name": "  "})[0], 400)
+        self.assertEqual(self.admin.req("PUT", "/api/customers/%d" % cust["id"], {"name": ""})[0], 400)
+        self.assertEqual(staff.req("POST", "/api/customers/%d/payments" % cust["id"],
+                                   {"amount": 1, "paid_on": "2026-13-99"})[0], 400)
         inv = lambda amt, no: {"customer": "Peter Otieno", "customer_id": cust["id"], "amount": amt,
                                "invoiceNo": no, "fuelType": "Diesel", "carReg": "KDA 123X"}
         day1 = {**SAMPLE, "station": "Kisumu Branch", "report_date": "2026-10-14", "invoices": [inv(9000, "INV-1")]}
