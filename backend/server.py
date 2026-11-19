@@ -23,7 +23,7 @@ Environment
 
 API (all JSON; everything except /api/health and /api/login needs a signed-in session)
     POST   /api/login  /api/logout       GET /api/me     POST /api/me/password
-    GET    /api/stations                 POST /api/compute
+    GET|POST /api/stations   DELETE /api/stations/<name> (admin; only unused)   POST /api/compute
     GET    /api/records?station=&date=&from=&to=&limit=
     POST   /api/records                  (upserts on report_date + station)
     GET|PUT|DELETE /api/records/<id>     DELETE /api/records?station=   (admin; moves to bin)
@@ -92,9 +92,8 @@ STAFF_EDIT_DAYS = 1              # staff may change today's and yesterday's reco
 TRUST_PROXY = os.environ.get("PK_TRUST_PROXY") == "1"
 KENYA_TZ = timezone(timedelta(hours=3))
 
-STATIONS = [
-    "Ngeria Branch", "Himaki Branch", "Moiben Branch",
-]
+# Branch names are added by the admin in the app (Store.add_station); a new install has none.
+STATION_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .,'&()/-]{1,59}$")
 
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 mimetypes.add_type("text/javascript", ".js")
@@ -448,7 +447,59 @@ class Store:
         for col in ("deleted_at", "deleted_by", "approved_at", "approved_by"):
             if col not in cols:
                 self.conn.execute("ALTER TABLE records ADD COLUMN %s TEXT" % col)
+        # Branches the admin has added. Databases from before this list existed keep the
+        # branches already in use by their users and records; a new one starts empty.
+        tables = {r["name"] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "stations" not in tables:
+            self.conn.execute("""CREATE TABLE stations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                created_by TEXT NOT NULL, created_at TEXT NOT NULL)""")
+            used = [r[0] for r in self.conn.execute("SELECT DISTINCT station FROM records ORDER BY station")]
+            if "users" in tables:
+                used += [r[0] for r in self.conn.execute(
+                    "SELECT DISTINCT station FROM users WHERE station IS NOT NULL ORDER BY station")]
+            for name in dict.fromkeys(n for n in used if n):
+                self.conn.execute("INSERT OR IGNORE INTO stations (name, created_by, created_at) VALUES (?, ?, ?)",
+                                  (name, "system", now_iso()))
         self.conn.commit()
+
+    # ── Branches ──
+    def stations(self):
+        with self.lock:
+            return [r["name"] for r in self.conn.execute("SELECT name FROM stations ORDER BY id")]
+
+    def has_station(self, name):
+        return bool(name) and name in self.stations()
+
+    def add_station(self, name, by):
+        name = re.sub(r"\s+", " ", str(name or "")).strip()
+        if not STATION_NAME_RE.match(name):
+            raise ApiError(HTTPStatus.BAD_REQUEST,
+                           "Branch name must be 2-60 letters, numbers, spaces or . , ' & ( ) / -")
+        try:
+            with self.lock:
+                self.conn.execute("INSERT INTO stations (name, created_by, created_at) VALUES (?, ?, ?)",
+                                  (name, by, now_iso()))
+                self.conn.commit()
+        except sqlite3.IntegrityError:
+            same = next((n for n in self.stations() if n.lower() == name.lower()), name)
+            raise ApiError(HTTPStatus.CONFLICT, "There is already a branch called %s" % same)
+        return name
+
+    def remove_station(self, name):
+        """Only a branch nothing refers to can go, so no record or user is left without one."""
+        if name not in self.stations():
+            raise ApiError(HTTPStatus.NOT_FOUND, "Branch not found")
+        with self.lock:
+            used = self.conn.execute("SELECT COUNT(*) FROM records WHERE station = ?", (name,)).fetchone()[0]
+            users = self.conn.execute("SELECT COUNT(*) FROM users WHERE station = ?", (name,)).fetchone()[0]
+            if used or users:
+                raise ApiError(HTTPStatus.CONFLICT,
+                               "%s still has %d saved day(s) and %d user(s) — it can only be removed while unused"
+                               % (name, used, users))
+            self.conn.execute("DELETE FROM stations WHERE name = ?", (name,))
+            self.conn.execute("DELETE FROM prices WHERE station = ?", (name,))
+            self.conn.commit()
 
     @staticmethod
     def _row(row):
@@ -835,8 +886,8 @@ class Auth:
         if role not in ("admin", "manager", "staff"):
             raise ApiError(HTTPStatus.BAD_REQUEST, "role must be 'admin', 'manager' or 'staff'")
         station = (station or "").strip() or None
-        if station and station not in STATIONS:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "Unknown station")
+        if station and not self.store.has_station(station):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Unknown branch — add it under Branches first")
         if role == "manager" and not station:
             raise ApiError(HTTPStatus.BAD_REQUEST, "A branch manager needs a branch")
         check_new_password(password, username)
@@ -1064,6 +1115,10 @@ class Handler(BaseHTTPRequestHandler):
             return user["station"]
         return requested or None
 
+    def _known_station(self, station):
+        if not self.store.has_station(station):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Unknown branch — the admin adds branches under 👤 Account")
+
     @staticmethod
     def _require_admin(user):
         if user["role"] != "admin":
@@ -1172,12 +1227,21 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(HTTPStatus.OK, {"user": updated})
         if path == "/api/stations" and m == "GET":
             scope = self._station_scope(user, None)
-            return self._json(HTTPStatus.OK, {"stations": [scope] if scope else STATIONS})
+            return self._json(HTTPStatus.OK, {"stations": [scope] if scope else self.store.stations()})
+        if path == "/api/stations" and m == "POST":
+            self._require_admin(user)
+            name = self.store.add_station(self._body().get("name"), user["username"])
+            return self._json(HTTPStatus.CREATED, {"station": name, "stations": self.store.stations()})
+        mm = re.fullmatch(r"/api/stations/([^/]+)", path)
+        if mm and m == "DELETE":
+            self._require_admin(user)
+            self.store.remove_station(unquote(mm.group(1)))
+            return self._json(HTTPStatus.OK, {"stations": self.store.stations()})
         # ── Receipt photos ──
         if path == "/api/uploads" and m == "POST":
             body = self._body(max_bytes=5 * 1024 * 1024)
             station = self._station_scope(user, body.get("station"))
-            if station not in STATIONS:
+            if not self.store.has_station(station):
                 raise ApiError(HTTPStatus.BAD_REQUEST, "Choose the branch the receipt belongs to")
             saved = self.uploads.save(body.get("data"), station, user["username"], now_iso())
             return self._json(HTTPStatus.CREATED, saved)
@@ -1214,6 +1278,7 @@ class Handler(BaseHTTPRequestHandler):
             if m == "POST":
                 rec = clean_input(self._body())
                 self._station_scope(user, rec["station"])
+                self._known_station(rec["station"])
                 existing = self.store.list(rec["station"], rec["report_date"])
                 existing = existing[0] if existing else None
                 # An approved day stays locked even while it sits in the bin
@@ -1241,6 +1306,7 @@ class Handler(BaseHTTPRequestHandler):
                 existing = self._own_record(user, rec_id)
                 rec = clean_input(self._body())
                 self._station_scope(user, rec["station"])
+                self._known_station(rec["station"])
                 self._check_editable(user, existing["report_date"], existing)
                 self._check_editable(user, rec["report_date"])
                 self._prepare_record(rec, existing, user)
@@ -1292,7 +1358,7 @@ class Handler(BaseHTTPRequestHandler):
             self._require_admin(user)
             body = self._body()
             stations = body.get("stations") or []
-            if not isinstance(stations, list) or not stations or any(st not in STATIONS for st in stations):
+            if not isinstance(stations, list) or not stations or any(not self.store.has_station(st) for st in stations):
                 raise ApiError(HTTPStatus.BAD_REQUEST, "Choose one or more valid branches")
             eff = str(body.get("effective_from") or "")
             if not DATE_RE.match(eff):
@@ -1362,8 +1428,8 @@ class Handler(BaseHTTPRequestHandler):
             if mm.group(2) == "/payments" and m == "POST":
                 body = self._body()
                 station = self._station_scope(user, body.get("station") or None) or body.get("station") or ""
-                if station and station not in STATIONS:
-                    raise ApiError(HTTPStatus.BAD_REQUEST, "Unknown station")
+                if station and not self.store.has_station(station):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "Unknown branch")
                 pid = self.credit.add_payment(cid, body, user["username"], station, now_iso(), today())
                 return self._json(HTTPStatus.CREATED, {"payment_id": pid, **self.credit.statement(cid)})
         mm = re.fullmatch(r"/api/payments/(\d+)/void", path)
@@ -1552,6 +1618,7 @@ def make_server(host=HOST, port=PORT, db_path=DB_PATH, bootstrap=True):
 def cli(argv):
     """create-user NAME [--role admin|manager|staff] [--station NAME] [--name "Full Name"]
     reset-password NAME
+    add-branch "BRANCH NAME"
     backup                 (writes a backup zip into the backups folder now)
     restore BACKUP.zip     (stop the app first; the current database is kept as a copy)"""
     if argv and argv[0] == "restore":
@@ -1565,6 +1632,14 @@ def cli(argv):
         print("Restored %d days and %d photos into %s" % (done["days"], done["photos"], DB_PATH))
         if done["saved_current_as"]:
             print("The database it replaced was saved as %s" % done["saved_current_as"])
+        return
+    if argv and argv[0] == "add-branch":
+        if len(argv) != 2:
+            sys.exit(cli.__doc__)
+        try:
+            print("Added branch %s" % Store(DB_PATH).add_station(argv[1], "command line"))
+        except ApiError as e:
+            sys.exit("Error: " + e.message)
         return
     if argv and argv[0] == "backup":
         httpd = make_server(port=0, bootstrap=False)

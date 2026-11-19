@@ -209,7 +209,8 @@ async function logout() {
   closeAlerts();
   closeStatement();
   closeBin();
-  ALERTS = []; CUSTOMERS = [];
+  ALERTS = []; CUSTOMERS = []; STATIONS = [];
+  renderStationPickers();
   $('alertBtn').hidden = true; $('alertCount').hidden = true;
   clearFormForNewEntry();
   loadRecs();
@@ -239,7 +240,7 @@ function applyUserToUI() {
   const sel = $('fStation');
   if (fixed) sel.value = USER.station;
   sel.disabled = !!fixed;
-  $('hStation').textContent = sel.value;
+  $('hStation').textContent = sel.value || 'PetroKenya';
   $('filterStationBtn').style.display = fixed ? 'none' : '';
   if (fixed) $('filterStation').style.display = 'none';
   $('eraseAllBtn').style.display = isAdmin ? '' : 'none';
@@ -457,6 +458,7 @@ async function purgeFromBin(id, date) {
 }
 
 async function startSession() {
+  await loadStations();
   applyUserToUI();
   await syncFromServer();
   flushOutbox();
@@ -475,6 +477,8 @@ function openAccount() {
     : USER.role === 'manager' ? 'Branch Manager — ' + USER.station
     : 'Staff — ' + (USER.station || 'all branches');
   $('usersSec').style.display = USER.role === 'admin' ? 'block' : 'none';
+  $('stationsSec').hidden = USER.role !== 'admin';
+  if (USER.role === 'admin') renderStationsAdmin();
   ['pwCurrent','pwNew'].forEach(id => $(id).value = '');
   if (USER.role === 'admin') loadUsers();
   $('alertSettingsSec').hidden = USER.role !== 'admin';
@@ -502,6 +506,73 @@ async function changePassword() {
     await api('POST', '/me/password', { current_password: $('pwCurrent').value, new_password: $('pwNew').value });
     ['pwCurrent','pwNew'].forEach(id => $(id).value = '');
     toast('🔑 Password changed');
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+// ── Branches: added by the admin; every branch picker is filled from this list ─
+let STATIONS = [];
+const STATIONS_KEY = 'pk_stations_v1';
+
+async function loadStations() {
+  try {
+    STATIONS = (await api('GET', '/stations')).stations || [];
+    storeSet(STATIONS_KEY, { user: USER && USER.username, stations: STATIONS });
+  } catch (e) {
+    const cache = storeGet(STATIONS_KEY);              // offline: the list from the last sync
+    STATIONS = cache && USER && cache.user === USER.username ? cache.stations || [] : [];
+  }
+  renderStationPickers();
+}
+
+function renderStationPickers() {
+  const opt = n => `<option value="${esc(n)}" translate="no">${esc(n)}</option>`;
+  const fill = (id, first) => {
+    const sel = $(id), keep = sel.value;
+    sel.innerHTML = first + STATIONS.map(opt).join('');
+    if (STATIONS.includes(keep) || (keep === '' && first)) sel.value = keep;
+  };
+  fill('fStation', STATIONS.length ? '' : '<option value="">— No branch yet —</option>');
+  fill('filterStation', '<option value="">All Branches</option>');
+  fill('nuStation', '<option value="">All branches</option>');
+  $('priceStations').innerHTML = STATIONS.map(n =>
+    `<label class="chk"><input type="checkbox" name="priceStation" value="${esc(n)}"> <span translate="no">${esc(n)}</span></label>`).join('');
+  $('hStation').textContent = sv('fStation') || 'PetroKenya';
+  const note = $('noBranchNote');
+  note.hidden = !USER || STATIONS.length > 0;
+  note.textContent = USER && USER.role === 'admin'
+    ? '🏪 No branches yet. Add your first branch under 👤 Account → Branches, then you can start recording.'
+    : '🏪 No branches have been set up yet. Ask the admin to add your branch.';
+}
+
+function renderStationsAdmin() {
+  $('stationsList').innerHTML = STATIONS.length
+    ? STATIONS.map(n => `<div class="m-row"><span translate="no">🏪 ${esc(n)}</span>
+        <button class="btn btn-r btn-sm" onclick="removeStation(this.dataset.name)" data-name="${esc(n)}">Remove</button></div>`).join('')
+    : '<div class="m-sub" style="margin:0">No branches yet — add the first one below.</div>';
+}
+
+async function addStation() {
+  if (!requireOnline('add a branch')) return;
+  try {
+    const res = await api('POST', '/stations', { name: sv('nsName') });
+    $('nsName').value = '';
+    STATIONS = res.stations;
+    storeSet(STATIONS_KEY, { user: USER.username, stations: STATIONS });
+    renderStationPickers(); renderStationsAdmin();
+    if (STATIONS.length === 1) { applyUserToUI(); loadRecordForDateAndStation(); }
+    toast('✅ Branch added — ' + res.station);
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+async function removeStation(name) {
+  if (!requireOnline('remove a branch')) return;
+  const ok = await showConfirmModal('Remove branch?', 'Remove ' + name + '? This only works while no saved days or users belong to it.');
+  if (!ok) return;
+  try {
+    STATIONS = (await api('DELETE', '/stations/' + encodeURIComponent(name))).stations;
+    storeSet(STATIONS_KEY, { user: USER.username, stations: STATIONS });
+    renderStationPickers(); renderStationsAdmin(); applyUserToUI(); loadRecordForDateAndStation();
+    toast('🗑️ Branch removed — ' + name);
   } catch (e) { toast('⚠️ ' + e.message, true); }
 }
 
@@ -1555,6 +1626,7 @@ function renderDeliveries() {
 
 // ── Save record ───────────────────────────────────────────────────────────────
 async function saveRec() {
+  if (!sv('fStation')) { toast('⚠️ Choose a branch first — the admin adds branches under 👤 Account', true); return; }
   const locked = lockReason(sv('fDate'));
   if (locked) { toast(locked, true); return; }
   const c = COMP;

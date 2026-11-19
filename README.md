@@ -192,9 +192,16 @@ never in the code). Then use **Send Test Email** in Alert Settings.
 - **👤 → Sign out other devices** ends your other sign-ins; admins can sign any user
   out everywhere (⎋ next to the user).
 
+**Branches** are added by the admin under **👤 → 🏪 Branches**; a new install starts with none,
+and nothing can be recorded until the first branch exists. Every branch picker (Fuel Entry,
+users, prices, records filter) uses that list. A branch can only be removed while no saved days
+or users belong to it. (A database from before branches were managed keeps the branches its
+users and records already use.)
+
 Admins manage users in the app under **👤**. From a terminal you can also run:
 
 ```bash
+python3 backend/server.py add-branch "Moiben Branch"
 python3 backend/server.py create-user mary --role staff --station "Moiben Branch"
 python3 backend/server.py reset-password mary
 ```

@@ -72,6 +72,8 @@ class ServerCase(unittest.TestCase):
         cls.port = cls.httpd.server_address[1]
         cls.base = "http://127.0.0.1:%d" % cls.port
         auth = cls.httpd.RequestHandlerClass.auth
+        for name in ("Ngeria Branch", "Himaki Branch", "Moiben Branch"):
+            cls.httpd.RequestHandlerClass.store.add_station(name, "test")
         auth.create("boss", PASSWORD, "admin")
         auth.create("kisumu", PASSWORD, "staff", "Moiben Branch")
         auth.create("roamer", PASSWORD, "staff")
@@ -841,3 +843,49 @@ class BackupTest(ServerCase):
                 f.write(b"not a zip")
             with self.assertRaises(business.Error):
                 business.restore(bad, target, os.path.join(tmp, "up"), os.path.join(tmp, "bk"))
+
+
+class StationTest(ServerCase):
+    """Branches are added by the admin; nothing can be saved to a branch that doesn't exist."""
+
+    def test_admin_adds_and_removes_branches(self):
+        staff = Client(self.base).login("kisumu")
+        self.assertEqual(staff.req("POST", "/api/stations", {"name": "Eldoret Branch"})[0], 403)
+        self.assertEqual(self.admin.req("POST", "/api/records", {**SAMPLE, "station": "Eldoret Branch"})[0], 400)
+        self.assertEqual(self.admin.req("POST", "/api/stations", {"name": "x"})[0], 400)
+        self.assertEqual(self.admin.req("POST", "/api/stations", {"name": "<b>Bad</b>"})[0], 400)
+        status, res, _ = self.admin.req("POST", "/api/stations", {"name": "  Eldoret   Branch "})
+        self.assertEqual((status, res["station"]), (201, "Eldoret Branch"))
+        self.assertEqual(res["stations"][-1], "Eldoret Branch")
+        self.assertEqual(self.admin.req("POST", "/api/stations", {"name": "eldoret branch"})[0], 409)
+        self.assertEqual(staff.req("GET", "/api/stations")[1]["stations"], ["Moiben Branch"])   # own branch only
+        self.assertEqual(self.admin.req("POST", "/api/records", {**SAMPLE, "station": "Eldoret Branch"})[0], 201)
+        self.assertEqual(self.admin.req("DELETE", "/api/stations/Eldoret%20Branch")[0], 409)    # has a saved day
+        self.admin.req("POST", "/api/stations", {"name": "Spare Branch"})
+        self.assertEqual(staff.req("DELETE", "/api/stations/Spare%20Branch")[0], 403)
+        status, res, _ = self.admin.req("DELETE", "/api/stations/Spare%20Branch")
+        self.assertEqual(status, 200)
+        self.assertNotIn("Spare Branch", res["stations"])
+        self.assertEqual(self.admin.req("DELETE", "/api/stations/Nowhere")[0], 404)
+        self.assertEqual(self.admin.req("POST", "/api/users", {"username": "newbie", "password": "Mango-Tree-42",
+                                                               "role": "staff", "station": "Nowhere"})[0], 400)
+        store = self.httpd.RequestHandlerClass.store
+        store.conn.execute("DELETE FROM records WHERE station = 'Eldoret Branch'")
+        store.conn.execute("DELETE FROM stations WHERE name = 'Eldoret Branch'")
+        store.conn.commit()
+
+    def test_a_new_database_starts_without_branches_and_old_ones_keep_theirs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fresh = server.Store(os.path.join(tmp, "new.sqlite3"))
+            self.assertEqual(fresh.stations(), [])
+            fresh.conn.close()
+            import sqlite3
+            old_path = os.path.join(tmp, "old.sqlite3")
+            old = server.Store(old_path)
+            old.save({**server.clean_input({**SAMPLE, "station": "Old Town Branch"})}, by="t")
+            old.conn.execute("DROP TABLE stations")          # as it was before branches were managed
+            old.conn.commit()
+            old.conn.close()
+            again = server.Store(old_path)
+            self.assertEqual(again.stations(), ["Old Town Branch"])
+            again.conn.close()

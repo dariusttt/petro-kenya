@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PetroKenya">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/styles.css?v=15">
+<link rel="stylesheet" href="css/styles.css?v=16">
 </head>
 <body>
 
@@ -37,7 +37,7 @@
   </div>
   <div class="hdr-right">
     <div class="hdr-info">
-      <div id="hStation" style="font-weight:600;color:var(--acc2)">Ngeria Branch</div>
+      <div id="hStation" style="font-weight:600;color:var(--acc2)" translate="no">PetroKenya</div>
       <div id="hDate"></div>
     </div>
     <button class="btn btn-o btn-sm" id="installBtn" style="display:none" onclick="installApp()">📲 Install</button>
@@ -47,6 +47,7 @@
 </header>
 
 <main>
+  <div class="warn-note" id="noBranchNote" hidden style="margin-bottom:14px"></div>
   <!-- TOP BAR -->
   <div class="top-bar">
     <div class="date-grp">
@@ -56,9 +57,6 @@
     <div class="station-grp">
       <label>STATION:</label>
       <select id="fStation" onchange="document.getElementById('hStation').textContent=this.value||'PetroKenya';loadRecordForDateAndStation()">
-        <option value="Ngeria Branch">Ngeria Branch</option>
-        <option value="Himaki Branch">Himaki Branch</option>
-        <option value="Moiben Branch">Moiben Branch</option>
       </select>
     </div>
     <div class="station-grp">
@@ -719,9 +717,7 @@
       <div class="ig" style="margin-bottom:12px"><label>Branches</label>
         <div class="chk-grid">
             <label class="chk"><input type="checkbox" id="priceAll" onchange="toggleAllPriceStations(this.checked)"> <b>All branches</b></label>
-            <label class="chk"><input type="checkbox" name="priceStation" value="Ngeria Branch"> Ngeria Branch</label>
-            <label class="chk"><input type="checkbox" name="priceStation" value="Himaki Branch"> Himaki Branch</label>
-            <label class="chk"><input type="checkbox" name="priceStation" value="Moiben Branch"> Moiben Branch</label>
+            <span id="priceStations" style="display:contents"></span>
         </div>
       </div>
       <div class="g4">
@@ -823,9 +819,6 @@
       <button class="btn" id="filterStationBtn" style="background:rgba(91,184,224,.1);border:1px solid rgba(91,184,224,.3);color:var(--blue)" onclick="toggleStationFilter()">🔽 Filter Branch</button>
       <select id="filterStation" style="display:none;background:var(--s2);border:1px solid var(--brd);color:var(--txt);font-family:var(--mono);font-size:.78rem;padding:7px 11px;border-radius:7px;outline:none" onchange="loadRecs()">
         <option value="">All Branches</option>
-        <option value="Ngeria Branch">Ngeria Branch</option>
-        <option value="Himaki Branch">Himaki Branch</option>
-        <option value="Moiben Branch">Moiben Branch</option>
       </select>
       <span id="recCount" style="font-family:var(--mono);font-size:.72rem;color:var(--mut);margin-left:auto"></span>
       <button class="btn btn-o" id="binBtn" onclick="openBin()" style="margin-left:4px">🗑️ Bin</button>
@@ -1092,6 +1085,19 @@
       </div>
     </div>
 
+    <div class="m-sec" id="stationsSec" hidden>
+      <div class="m-sec-ttl">🏪 Branches (Admin)</div>
+      <div id="stationsList"></div>
+      <div class="g2" style="gap:10px;margin-top:10px">
+        <div class="ig" style="grid-column:1/-1"><label for="nsName">New branch name</label>
+          <input type="text" id="nsName" maxlength="60" placeholder="e.g. Ngeria Branch"
+                 onkeydown="if(event.key==='Enter')addStation()"></div>
+      </div>
+      <div class="actions" style="margin-top:10px">
+        <button class="btn btn-g btn-sm" onclick="addStation()">➕ Add Branch</button>
+      </div>
+    </div>
+
     <div class="m-sec" id="usersSec" style="display:none">
       <div class="m-sec-ttl">Users (Admin)</div>
       <div id="usersList"></div>
@@ -1111,9 +1117,6 @@
         <div class="ig"><label for="nuStation">Branch (required for managers)</label>
           <select id="nuStation">
             <option value="">All branches</option>
-            <option value="Ngeria Branch">Ngeria Branch</option>
-            <option value="Himaki Branch">Himaki Branch</option>
-            <option value="Moiben Branch">Moiben Branch</option>
           </select></div>
       </div>
       <div class="actions" style="margin-top:10px">
@@ -1228,7 +1231,7 @@
 
 <div id="toast"></div>
 
-<script src="js/i18n.js?v=15"></script>
-<script src="js/app.js?v=15"></script>
+<script src="js/i18n.js?v=16"></script>
+<script src="js/app.js?v=16"></script>
 </body>
 </html>

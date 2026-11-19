@@ -191,7 +191,13 @@ const SW = {
 
   // ── Record details ──
   'Fuel Sales': 'Mauzo ya Mafuta',
-  'Pump Sales Meter Cross-Check': 'Ukaguzi wa Mita ya Mauzo', 'Backups (Admin)': 'Nakala za Akiba (Msimamizi)',
+  'Pump Sales Meter Cross-Check': 'Ukaguzi wa Mita ya Mauzo', 'Branches (Admin)': 'Matawi (Msimamizi)', 'New branch name': 'Jina la tawi jipya',
+  'Add Branch': 'Ongeza Tawi', 'Remove': 'Ondoa', 'Remove branch?': 'Ondoa tawi?', '— No branch yet —': '— Bado hakuna tawi —',
+  'No branches yet — add the first one below.': 'Bado hakuna matawi — ongeza la kwanza hapa chini.',
+  'No branches yet. Add your first branch under 👤 Account → Branches, then you can start recording.':
+    'Bado hakuna matawi. Ongeza tawi lako la kwanza kwenye 👤 Akaunti → Matawi, kisha unaweza kuanza kurekodi.',
+  'No branches have been set up yet. Ask the admin to add your branch.': 'Bado hakuna matawi yaliyowekwa. Mwombe msimamizi aongeze tawi lako.',
+  'Choose a branch first — the admin adds branches under 👤 Account': 'Chagua tawi kwanza — msimamizi huongeza matawi kwenye 👤 Akaunti', 'Backups (Admin)': 'Nakala za Akiba (Msimamizi)',
   'Email the nightly backup to (comma-separated)': 'Tuma nakala ya kila usiku kwa barua pepe (tenganisha kwa koma)',
   'Back Up Now': 'Hifadhi Nakala Sasa', 'Email a Backup Now': 'Tuma Nakala kwa Barua Pepe Sasa', 'Download': 'Pakua',
   'Backup email saved': 'Barua pepe ya nakala imehifadhiwa',
@@ -270,6 +276,8 @@ const SW_PATTERNS = [
   [/^Online · (\d+) waiting to send$/, 'Mtandaoni · $1 zinasubiri kutumwa'],
   [/^Offline · (\d+) waiting to send$/, 'Nje ya mtandao · $1 zinasubiri kutumwa'],
   [/^Margin: (.+)$/, 'Kiwango cha faida: $1'],
+  [/^Branch added — (.+)$/, 'Tawi limeongezwa — $1'],
+  [/^Branch removed — (.+)$/, 'Tawi limeondolewa — $1'],
   [/^Last backup: (.+)\. A new one is made every night; the latest 14 are kept on the server\.$/, 'Nakala ya mwisho: $1. Mpya hufanywa kila usiku; 14 za mwisho huhifadhiwa kwenye seva.'],
   [/^Last emailed (.+) to (.+)\.$/, 'Ilitumwa mara ya mwisho $1 kwa $2.'],
   [/^The last backup email failed: (.+)$/, 'Barua pepe ya nakala ya mwisho ilishindwa: $1'],

@@ -7,7 +7,7 @@
    ══════════════════════════════════════════════════════════════════════════════ */
 (function () {
   const DB_KEY = 'pkdemo_db_v1', SESSION_KEY = 'pkdemo_session_v1';
-  const STATIONS = ['Ngeria Branch', 'Himaki Branch', 'Moiben Branch'];
+  const EXAMPLE_STATIONS = ['Ngeria Branch', 'Himaki Branch', 'Moiben Branch'];   // the example's branches
   const FUELS = ['petrol', 'diesel', 'kero'];
   // Same pumps as backend/server.py: three petrol, three diesel, one kerosene
   const PUMPS = [['p1', 'petrol'], ['p2', 'petrol'], ['p3', 'petrol'], ['d1', 'diesel'], ['d2', 'diesel'], ['d3', 'diesel'], ['k1', 'kero']];
@@ -45,7 +45,7 @@
   function load() {
     if (memory) return memory;
     try { memory = JSON.parse(localStorage.getItem(DB_KEY)); } catch (e) { memory = null; }
-    if (!memory || memory.version !== 4) memory = seed();
+    if (!memory || memory.version !== 5) memory = seed();
     return memory;
   }
   function save() { try { localStorage.setItem(DB_KEY, JSON.stringify(memory)); } catch (e) { /* kept in memory */ } }
@@ -174,6 +174,7 @@
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) fail(400, 'report_date is required (YYYY-MM-DD)');
     if (!body.station) fail(400, 'station is required');
     scope(user, body.station);
+    if (!(db.stations || []).includes(body.station)) fail(400, 'Unknown branch — the admin adds branches under 👤 Account');
     const any = recId ? db.records.find(r => r.id === recId) : db.records.find(r => r.report_date === date && r.station === body.station);
     const existing = any && !any.deleted_at ? any : null;
     if (recId && !existing) fail(404, 'Record not found');
@@ -306,7 +307,7 @@
 
   // ── Example data for a first visit ─────────────────────────────────────────
   function seed() {
-    const db = { version: 4, seq: {}, users: [], records: [], versions: [], prices: [], alerts: [], customers: [],
+    const db = { version: 5, seq: {}, users: [], records: [], versions: [], prices: [], alerts: [], customers: [],
       payments: [], uploads: {}, settings: { ...DEFAULT_SETTINGS } };
     memory = db;
     const t = kenyaToday();
@@ -317,7 +318,8 @@
     mk('brian', 'Pump-Shift-55', 'staff', 'Ngeria Branch', 'Brian Otieno (example)');
     const owner = db.users[0], brian = db.users[2], mary = db.users[1];
     const P = { petrol: [186.31, 171.2], diesel: [171.6, 158.4], kero: [161.75, 149.1] };
-    STATIONS.forEach(st => FUELS.forEach(f => db.prices.push({ id: nextId(db, 'price'), station: st, fuel: f,
+    db.stations = [...EXAMPLE_STATIONS];
+    EXAMPLE_STATIONS.forEach(st => FUELS.forEach(f => db.prices.push({ id: nextId(db, 'price'), station: st, fuel: f,
       sell: P[f][0], cost: P[f][1], effective_from: daysBefore(t, 20), set_by: 'owner' })));
     db.customers.push({ id: nextId(db, 'customer'), name: 'Example: Peter Otieno', company: 'Example Matatu Sacco',
       phone: '0722 000 000', credit_limit: 20000, created_by: 'owner', created_at: nowIso() });
@@ -404,7 +406,26 @@
       checkPassword(body.new_password, user.username); user.password = body.new_password; return { ok: true };
     }
     if (path === '/api/me/logout-all') return { signed_out: 0 };
-    if (path === '/api/stations') { const s = scope(pu, null); return { stations: s ? [s] : STATIONS }; }
+    if (path === '/api/stations' && method === 'GET') { const s = scope(pu, null); return { stations: s ? [s] : db.stations }; }
+    if (path === '/api/stations' && method === 'POST') {
+      requireAdmin(pu);
+      const name = String(body.name || '').replace(/\s+/g, ' ').trim();
+      if (!/^[A-Za-z0-9][A-Za-z0-9 .,'&()\/-]{1,59}$/.test(name)) fail(400, "Branch name must be 2-60 letters, numbers, spaces or . , ' & ( ) / -");
+      const same = db.stations.find(x => x.toLowerCase() === name.toLowerCase());
+      if (same) fail(409, 'There is already a branch called ' + same);
+      db.stations.push(name);
+      return { station: name, stations: db.stations };
+    }
+    if ((m = path.match(/^\/api\/stations\/(.+)$/)) && method === 'DELETE') {
+      requireAdmin(pu);
+      const name = decodeURIComponent(m[1]);
+      if (!db.stations.includes(name)) fail(404, 'Branch not found');
+      const days = db.records.filter(r => r.station === name).length, users = db.users.filter(u => u.station === name).length;
+      if (days || users) fail(409, `${name} still has ${days} saved day(s) and ${users} user(s) — it can only be removed while unused`);
+      db.stations = db.stations.filter(x => x !== name);
+      db.prices = db.prices.filter(p => p.station !== name);
+      return { stations: db.stations };
+    }
 
     if (path === '/api/records' && method === 'GET') {
       const st = scope(pu, q.station);
@@ -472,7 +493,7 @@
     if (path === '/api/prices' && method === 'POST') {
       requireAdmin(pu);
       const sts = body.stations || [];
-      if (!sts.length || sts.some(s => !STATIONS.includes(s))) fail(400, 'Choose one or more valid branches');
+      if (!sts.length || sts.some(s => !db.stations.includes(s))) fail(400, 'Choose one or more valid branches');
       if (!/^\d{4}-\d{2}-\d{2}$/.test(body.effective_from || '')) fail(400, 'effective_from must be a date (YYYY-MM-DD)');
       let n = 0;
       FUELS.forEach(f => {
@@ -561,7 +582,7 @@
     }
     if (path === '/api/uploads' && method === 'POST') {
       const st = scope(pu, body.station);
-      if (!STATIONS.includes(st)) fail(400, 'Choose the branch the receipt belongs to');
+      if (!db.stations.includes(st)) fail(400, 'Choose the branch the receipt belongs to');
       if (!/^data:image\/(jpeg|png|webp);base64,/.test(body.data || '')) fail(400, 'Only JPEG, PNG or WebP photos can be uploaded');
       const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
       db.uploads[id] = { station: st, data: body.data };
