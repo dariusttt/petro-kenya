@@ -2,9 +2,9 @@
    App files are cached; /api calls always go to the network (records live on
    the server, the page keeps its own read-only copy for offline viewing).
    Bump VERSION whenever frontend files change so phones pick up the update. */
-const VERSION = 'pk-v15';
+const VERSION = 'pk-v16';
 const SHELL = [
-  '/', '/index.html', '/css/styles.css?v=14', '/js/i18n.js?v=14', '/js/app.js?v=14', '/manifest.webmanifest',
+  '/', '/index.html', '/css/styles.css?v=15', '/js/i18n.js?v=15', '/js/app.js?v=15', '/manifest.webmanifest',
   '/icons/icon.svg', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png'
 ];
 

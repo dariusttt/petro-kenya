@@ -195,7 +195,7 @@ never in the code). Then use **Send Test Email** in Alert Settings.
 Admins manage users in the app under **👤**. From a terminal you can also run:
 
 ```bash
-python3 backend/server.py create-user mary --role staff --station "Kisumu Branch"
+python3 backend/server.py create-user mary --role staff --station "Moiben Branch"
 python3 backend/server.py reset-password mary
 ```
 

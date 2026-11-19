@@ -24,7 +24,7 @@ server.today = lambda: TODAY
 
 SAMPLE = {
     "report_date": "2026-10-14",
-    "station": "Westlands Branch",
+    "station": "Ngeria Branch",
     "petrol_open": 1000, "petrol_close": 1100, "petrol_price": 189.5, "petrol_cost": 174,
     "diesel_open": 500, "diesel_close": 550, "diesel_price": 172, "diesel_cost": 157,
     "mpesa_amount": 20000, "cash_amount": 7550,
@@ -73,9 +73,9 @@ class ServerCase(unittest.TestCase):
         cls.base = "http://127.0.0.1:%d" % cls.port
         auth = cls.httpd.RequestHandlerClass.auth
         auth.create("boss", PASSWORD, "admin")
-        auth.create("kisumu", PASSWORD, "staff", "Kisumu Branch")
+        auth.create("kisumu", PASSWORD, "staff", "Moiben Branch")
         auth.create("roamer", PASSWORD, "staff")
-        auth.create("kmanager", PASSWORD, "manager", "Kisumu Branch")
+        auth.create("kmanager", PASSWORD, "manager", "Moiben Branch")
         threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
 
     @classmethod
@@ -203,17 +203,17 @@ class ServerTest(ServerCase):
     def test_filters_analytics_and_export(self):
         self.admin.req("POST", "/api/records", SAMPLE)
         self.admin.req("POST", "/api/records", {**SAMPLE, "report_date": "2026-10-13"})
-        self.admin.req("POST", "/api/records", {**SAMPLE, "station": "Kisumu Branch"})
+        self.admin.req("POST", "/api/records", {**SAMPLE, "station": "Moiben Branch"})
 
-        self.assertEqual(self.admin.req("GET", "/api/records?station=Kisumu%20Branch")[1]["count"], 1)
+        self.assertEqual(self.admin.req("GET", "/api/records?station=Moiben%20Branch")[1]["count"], 1)
         self.assertEqual(self.admin.req("GET", "/api/records?date=2026-10-14")[1]["count"], 2)
-        a = self.admin.req("GET", "/api/analytics?station=Westlands%20Branch")[1]
+        a = self.admin.req("GET", "/api/analytics?station=Ngeria%20Branch")[1]
         self.assertEqual(a["totals"]["days"], 2)
         self.assertEqual([d["report_date"] for d in a["last_7"]], ["2026-10-13", "2026-10-14"])
         status, csv_text, _ = self.admin.req("GET", "/api/export.csv")
         self.assertEqual(status, 200)
         self.assertEqual(len(csv_text.strip().splitlines()), 4)
-        self.assertEqual(self.admin.req("DELETE", "/api/records?station=Kisumu%20Branch")[1]["deleted"], 1)
+        self.assertEqual(self.admin.req("DELETE", "/api/records?station=Moiben%20Branch")[1]["deleted"], 1)
 
     def test_csv_export_neutralises_formulas(self):
         self.admin.req("POST", "/api/records", {**SAMPLE, "kra_business": "=HYPERLINK(\"http://x\")"})
@@ -272,17 +272,17 @@ class ServerTest(ServerCase):
         staff = Client(self.base).login("kisumu")
 
         self.assertEqual(staff.req("GET", "/api/records")[1]["count"], 0)
-        self.assertEqual(staff.req("GET", "/api/records?station=Westlands%20Branch")[0], 403)
+        self.assertEqual(staff.req("GET", "/api/records?station=Ngeria%20Branch")[0], 403)
         self.assertEqual(staff.req("POST", "/api/records", SAMPLE)[0], 403)
         self.assertEqual(staff.req("GET", "/api/records/%d" % other_id)[0], 404)
         self.assertEqual(staff.req("DELETE", "/api/records/%d" % other_id)[0], 404)
         self.assertEqual(staff.req("PUT", "/api/records/%d" % other_id,
-                                   {**SAMPLE, "station": "Kisumu Branch"})[0], 404)
+                                   {**SAMPLE, "station": "Moiben Branch"})[0], 404)
 
-        status, res, _ = staff.req("POST", "/api/records", {**SAMPLE, "station": "Kisumu Branch"})
+        status, res, _ = staff.req("POST", "/api/records", {**SAMPLE, "station": "Moiben Branch"})
         self.assertEqual(status, 201)
         self.assertEqual(staff.req("GET", "/api/records")[1]["count"], 1)
-        self.assertEqual(staff.req("GET", "/api/stations")[1]["stations"], ["Kisumu Branch"])
+        self.assertEqual(staff.req("GET", "/api/stations")[1]["stations"], ["Moiben Branch"])
         self.assertEqual(staff.req("DELETE", "/api/records/%d" % res["record"]["id"])[0], 200)
         self.assertEqual(staff.req("DELETE", "/api/records")[0], 403)
         self.assertEqual(staff.req("GET", "/api/users")[0], 403)
@@ -291,12 +291,12 @@ class ServerTest(ServerCase):
         self.admin.req("POST", "/api/records", SAMPLE)
         roamer = Client(self.base).login("roamer")
         self.assertEqual(roamer.req("GET", "/api/records")[1]["count"], 1)
-        self.assertEqual(roamer.req("POST", "/api/records", {**SAMPLE, "station": "Nakuru Branch"})[0], 201)
+        self.assertEqual(roamer.req("POST", "/api/records", {**SAMPLE, "station": "Himaki Branch"})[0], 201)
         self.assertEqual(roamer.req("DELETE", "/api/records")[0], 403)
 
     def test_admin_user_management(self):
         status, res, _ = self.admin.req("POST", "/api/users", {
-            "username": "nakuru", "password": PASSWORD, "role": "staff", "station": "Nakuru Branch"})
+            "username": "nakuru", "password": PASSWORD, "role": "staff", "station": "Himaki Branch"})
         self.assertEqual(status, 201)
         uid = res["user"]["id"]
         self.assertEqual(self.admin.req("POST", "/api/users", {"username": "nakuru", "password": PASSWORD})[0], 409)
@@ -409,7 +409,7 @@ class SecurityTest(ServerCase):
         self.assertEqual(self.admin.req("GET", "/api/bin")[1]["count"], 0)
 
     def test_staff_can_only_change_today_and_yesterday(self):
-        old = {**SAMPLE, "station": "Kisumu Branch", "report_date": "2026-10-13"}
+        old = {**SAMPLE, "station": "Moiben Branch", "report_date": "2026-10-13"}
         staff = Client(self.base).login("kisumu")
         self.assertEqual(staff.req("POST", "/api/records", old)[0], 403)
         rid = self.admin.req("POST", "/api/records", old)[1]["record"]["id"]   # admins can
@@ -421,20 +421,20 @@ class SecurityTest(ServerCase):
 
 class WorkflowTest(ServerCase):
     """Branch managers, day approval, owner-set prices, opening checks and deliveries."""
-    KISUMU = {**SAMPLE, "station": "Kisumu Branch"}
+    KISUMU = {**SAMPLE, "station": "Moiben Branch"}
 
     def test_manager_needs_a_branch_and_is_limited_to_it(self):
         self.assertEqual(self.admin.req("POST", "/api/users", {"username": "nobranch", "password": "Mango-Tree-42",
                                                                "role": "manager"})[0], 400)
         mgr = Client(self.base).login("kmanager")
-        self.assertEqual(mgr.req("POST", "/api/records", SAMPLE)[0], 403)               # Westlands
+        self.assertEqual(mgr.req("POST", "/api/records", SAMPLE)[0], 403)               # Ngeria
         old = {**self.KISUMU, "report_date": "2026-10-01"}
         self.assertEqual(mgr.req("POST", "/api/records", old)[0], 201)                  # older days OK
         self.assertEqual(mgr.req("GET", "/api/users")[0], 403)
 
     def test_pumps_add_up_and_their_openings_are_checked(self):
         mgr = Client(self.base).login("kmanager")
-        day = {"report_date": "2026-10-13", "station": "Kisumu Branch", "petrol_price": 200, "diesel_price": 170,
+        day = {"report_date": "2026-10-13", "station": "Moiben Branch", "petrol_price": 200, "diesel_price": 170,
                "pump_p1_open": 1000, "pump_p1_close": 1100, "pump_p1_sales_open": 5000, "pump_p1_sales_close": 25000,
                "pump_p2_open": 2000, "pump_p2_close": 2050, "pump_p2_sales_open": 100, "pump_p2_sales_close": 10100,
                "pump_p3_open": 300,                            # closing not read yet: counts as nothing sold
@@ -476,9 +476,9 @@ class WorkflowTest(ServerCase):
         self.assertNotIn("net_profit", report["totals"])
         self.assertNotIn("net_profit", staff.req("GET", "/api/export.csv")[1].splitlines()[0])
         self.assertNotIn("net_profit", staff.req("GET", "/api/reports/monthly.csv?month=2026-10")[1])
-        self.admin.req("POST", "/api/prices", {"stations": ["Kisumu Branch"], "effective_from": "2026-10-01",
+        self.admin.req("POST", "/api/prices", {"stations": ["Moiben Branch"], "effective_from": "2026-10-01",
                                                "petrol_sell": 190, "petrol_cost": 175})
-        prices = staff.req("GET", "/api/prices?station=Kisumu+Branch")[1]["prices"]
+        prices = staff.req("GET", "/api/prices?station=Moiben+Branch")[1]["prices"]
         self.assertEqual(prices["petrol"].get("sell"), 190)
         self.assertNotIn("cost", prices["petrol"])
         self.assertFalse(any("cost" in p for p in staff.req("GET", "/api/prices/history")[1]["prices"]))
@@ -510,14 +510,14 @@ class WorkflowTest(ServerCase):
         mgr, staff = Client(self.base).login("kmanager"), Client(self.base).login("kisumu")
         rid = staff.req("POST", "/api/records", self.KISUMU)[1]["record"]["id"]
         mgr.req("POST", "/api/records/%d/approve" % rid, {})
-        self.assertEqual(self.admin.req("DELETE", "/api/records?station=Kisumu%20Branch")[1]["deleted"], 1)
+        self.assertEqual(self.admin.req("DELETE", "/api/records?station=Moiben%20Branch")[1]["deleted"], 1)
         self.assertEqual(staff.req("POST", "/api/records", {**self.KISUMU, "cash_amount": 1})[0], 409)
         self.assertEqual(self.admin.req("POST", "/api/bin/%d/restore" % rid, {})[0], 200)
         self.assertEqual(self.admin.req("GET", "/api/records/%d" % rid)[1]["cash_amount"], 7550)
 
     def test_owner_prices_override_typed_prices(self):
         staff = Client(self.base).login("kisumu")
-        body = {"stations": ["Kisumu Branch", "Nakuru Branch"], "effective_from": "2026-10-14",
+        body = {"stations": ["Moiben Branch", "Himaki Branch"], "effective_from": "2026-10-14",
                 "petrol_sell": 190.5, "petrol_cost": 175}
         self.assertEqual(staff.req("POST", "/api/prices", body)[0], 403)
         self.assertEqual(self.admin.req("POST", "/api/prices", body)[1]["saved"], 2)
@@ -537,7 +537,7 @@ class WorkflowTest(ServerCase):
     def test_openings_are_checked_against_the_previous_day(self):
         yday = {**SAMPLE, "report_date": "2026-10-13", "petrol_dip_close": 5000}
         self.admin.req("POST", "/api/records", yday)
-        prev = self.admin.req("GET", "/api/records/previous?station=Westlands%20Branch&date=2026-10-14")[1]
+        prev = self.admin.req("GET", "/api/records/previous?station=Ngeria%20Branch&date=2026-10-14")[1]
         self.assertEqual(prev["record"]["report_date"], "2026-10-13")
         good = {**SAMPLE, "petrol_open": 1100, "petrol_close": 1200, "diesel_open": 550, "diesel_close": 600,
                 "petrol_dip_open": 5000}
@@ -568,13 +568,13 @@ class WorkflowTest(ServerCase):
                 CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
                     pw_hash TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('admin', 'staff')), station TEXT,
                     created_at TEXT NOT NULL, full_name TEXT);
-                INSERT INTO users VALUES (7, 'mary', 'x', 'staff', 'Kisumu Branch', '2026-01-01', 'Mary W');
+                INSERT INTO users VALUES (7, 'mary', 'x', 'staff', 'Moiben Branch', '2026-01-01', 'Mary W');
             """)
             conn.close()
             store = server.Store(path)
             auth = server.Auth(store)
             self.assertEqual(auth.get(7)["display_name"], "Mary W")
-            self.assertEqual(auth.create("boss2", "Mango-Tree-42", "manager", "Kisumu Branch")["role"], "manager")
+            self.assertEqual(auth.create("boss2", "Mango-Tree-42", "manager", "Moiben Branch")["role"], "manager")
             store.conn.close()
 
 
@@ -613,22 +613,22 @@ class BusinessTest(ServerCase):
 
     def test_alerts_are_raised_scoped_emailed_and_cleared(self):
         self.admin.req("PUT", "/api/settings", {"alert_emails": "owner@example.com, boss@example.com"})
-        bad = {**SAMPLE, "station": "Kisumu Branch", "petrol_dip_open": 5000, "petrol_dip_close": 2000,
+        bad = {**SAMPLE, "station": "Moiben Branch", "petrol_dip_open": 5000, "petrol_dip_close": 2000,
                "cash_amount": 0, "attendants": [{"name": "Otieno", "expected": 9000, "cash": 1000}]}
         rid = self.admin.req("POST", "/api/records", bad)[1]["record"]["id"]
-        self.admin.req("POST", "/api/records", {**SAMPLE, "cash_amount": 0})          # Westlands: cash short
+        self.admin.req("POST", "/api/records", {**SAMPLE, "cash_amount": 0})          # Ngeria: cash short
         alerts = self.admin.req("GET", "/api/alerts")[1]
         kinds = sorted((a["station"][:7], a["kind"]) for a in alerts["alerts"])
-        self.assertEqual(kinds, [("Kisumu ", "attendant_shortage"), ("Kisumu ", "cash_shortage"),
-                                 ("Kisumu ", "dip_shortage"), ("Kisumu ", "low_stock"),
-                                 ("Westlan", "cash_shortage")])
+        self.assertEqual(kinds, [("Moiben ", "attendant_shortage"), ("Moiben ", "cash_shortage"),
+                                 ("Moiben ", "dip_shortage"), ("Moiben ", "low_stock"),
+                                 ("Ngeria ", "cash_shortage")])
         self.assertEqual(alerts["unread"], 5)
         self.assertEqual(len(self.mail.sent), 2)                                     # one email per save
         self.assertEqual(self.mail.sent[0][0], ["owner@example.com", "boss@example.com"])
-        self.assertIn("Kisumu Branch", self.mail.sent[0][1])
+        self.assertIn("Moiben Branch", self.mail.sent[0][1])
 
         mgr = Client(self.base).login("kmanager")
-        self.assertEqual({a["station"] for a in mgr.req("GET", "/api/alerts")[1]["alerts"]}, {"Kisumu Branch"})
+        self.assertEqual({a["station"] for a in mgr.req("GET", "/api/alerts")[1]["alerts"]}, {"Moiben Branch"})
         self.assertEqual(Client(self.base).login("kisumu").req("GET", "/api/alerts")[0], 403)
         self.assertEqual(mgr.req("POST", "/api/alerts/read", {"all": True})[1]["marked"], 4)
         self.assertEqual(mgr.req("GET", "/api/alerts")[1]["unread"], 0)
@@ -667,7 +667,7 @@ class BusinessTest(ServerCase):
                                    {"amount": 1, "paid_on": "2026-13-99"})[0], 400)
         inv = lambda amt, no: {"customer": "Peter Otieno", "customer_id": cust["id"], "amount": amt,
                                "invoiceNo": no, "fuelType": "Diesel", "carReg": "KDA 123X"}
-        day1 = {**SAMPLE, "station": "Kisumu Branch", "report_date": "2026-10-14", "invoices": [inv(9000, "INV-1")]}
+        day1 = {**SAMPLE, "station": "Moiben Branch", "report_date": "2026-10-14", "invoices": [inv(9000, "INV-1")]}
         day2 = {**day1, "report_date": "2026-10-15", "invoices": [inv(8000, "INV-2"), {"customer": "walk-in", "amount": 50}]}
         staff.req("POST", "/api/records", day1)
         rid2 = staff.req("POST", "/api/records", day2)[1]["record"]["id"]
@@ -693,17 +693,17 @@ class BusinessTest(ServerCase):
     def test_monthly_report(self):
         self.admin.req("POST", "/api/records", {**SAMPLE, "report_date": "2026-10-01"})
         self.admin.req("POST", "/api/records", SAMPLE)
-        k = self.admin.req("POST", "/api/records", {**SAMPLE, "station": "Kisumu Branch"})[1]["record"]["id"]
+        k = self.admin.req("POST", "/api/records", {**SAMPLE, "station": "Moiben Branch"})[1]["record"]["id"]
         self.admin.req("POST", "/api/records", {**SAMPLE, "report_date": "2026-09-30"})   # other month
         Client(self.base).login("kmanager").req("POST", "/api/records/%d/approve" % k, {})
         rep = self.admin.req("GET", "/api/reports/monthly?month=2026-10")[1]
         by = {b["station"]: b for b in rep["branches"]}
-        self.assertEqual((by["Westlands Branch"]["days"], by["Kisumu Branch"]["approved_days"]), (2, 1))
-        self.assertEqual(by["Westlands Branch"]["petrol_litres"], 200)
+        self.assertEqual((by["Ngeria Branch"]["days"], by["Moiben Branch"]["approved_days"]), (2, 1))
+        self.assertEqual(by["Ngeria Branch"]["petrol_litres"], 200)
         self.assertEqual(rep["totals"]["days"], 3)
         self.assertEqual(rep["totals"]["net_profit"], 3 * 3100)
         mgr = Client(self.base).login("kmanager").req("GET", "/api/reports/monthly?month=2026-10")[1]
-        self.assertEqual([b["station"] for b in mgr["branches"]], ["Kisumu Branch"])
+        self.assertEqual([b["station"] for b in mgr["branches"]], ["Moiben Branch"])
         self.assertEqual(self.admin.req("GET", "/api/reports/monthly?month=Oct")[0], 400)
         status, csv_text, headers = self.admin.req("GET", "/api/reports/monthly.csv?month=2026-10")
         self.assertEqual(status, 200)
@@ -715,7 +715,7 @@ class UploadTest(ServerCase):
     JPEG = b"\xff\xd8\xff\xe0" + b"0" * 200
     PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 50
 
-    def upload(self, client, data, station="Kisumu Branch"):
+    def upload(self, client, data, station="Moiben Branch"):
         import base64
         return client.req("POST", "/api/uploads", {"data": base64.b64encode(data).decode(), "station": station})
 
@@ -724,7 +724,7 @@ class UploadTest(ServerCase):
         status, up, _ = self.upload(staff, self.JPEG)
         self.assertEqual((status, up["mime"]), (201, "image/jpeg"))
         self.assertEqual(self.upload(staff, b"<svg onload=alert(1)>")[0], 400)          # not a photo
-        self.assertEqual(self.upload(staff, self.PNG, station="Westlands Branch")[0], 403)
+        self.assertEqual(self.upload(staff, self.PNG, station="Ngeria Branch")[0], 403)
         self.assertEqual(self.upload(staff, b"\xff\xd8\xff" + b"0" * (3 * 1024 * 1024))[0], 413)
 
         r = staff.opener.open(self.base + "/api/uploads/" + up["id"])
@@ -732,12 +732,12 @@ class UploadTest(ServerCase):
         self.assertEqual(self.admin.req("GET", "/api/uploads/" + up["id"])[0], 200)
         other = Client(self.base).login("roamer")                                      # no branch: all
         self.assertEqual(other.req("GET", "/api/uploads/" + up["id"])[0], 200)
-        west = self.upload(self.admin, self.PNG, station="Westlands Branch")[1]
+        west = self.upload(self.admin, self.PNG, station="Ngeria Branch")[1]
         self.assertEqual(staff.req("GET", "/api/uploads/" + west["id"])[0], 404)
         self.assertEqual(staff.req("GET", "/api/uploads/" + "0" * 32)[0], 404)
         self.assertEqual(Client(self.base).req("GET", "/api/uploads/" + up["id"])[0], 401)
 
-        rec = staff.req("POST", "/api/records", {**SAMPLE, "station": "Kisumu Branch", "receipts": [
+        rec = staff.req("POST", "/api/records", {**SAMPLE, "station": "Moiben Branch", "receipts": [
             {"id": 1, "label": "Electricity token", "amount": 1500, "upload_id": up["id"]},
             {"id": 2, "label": "Westlands photo", "upload_id": west["id"]},
             {"id": 3, "label": "Made up", "upload_id": "f" * 32}]})[1]["record"]

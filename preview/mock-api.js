@@ -7,8 +7,7 @@
    ══════════════════════════════════════════════════════════════════════════════ */
 (function () {
   const DB_KEY = 'pkdemo_db_v1', SESSION_KEY = 'pkdemo_session_v1';
-  const STATIONS = ['Westlands Branch', 'Himaki Branch', 'Ngeria Branch', 'Nairobi West Branch',
-    'Mombasa Road Branch', 'Kisumu Branch', 'Nakuru Branch'];
+  const STATIONS = ['Ngeria Branch', 'Himaki Branch', 'Moiben Branch'];
   const FUELS = ['petrol', 'diesel', 'kero'];
   // Same pumps as backend/server.py: three petrol, three diesel, one kerosene
   const PUMPS = [['p1', 'petrol'], ['p2', 'petrol'], ['p3', 'petrol'], ['d1', 'diesel'], ['d2', 'diesel'], ['d3', 'diesel'], ['k1', 'kero']];
@@ -46,7 +45,7 @@
   function load() {
     if (memory) return memory;
     try { memory = JSON.parse(localStorage.getItem(DB_KEY)); } catch (e) { memory = null; }
-    if (!memory || memory.version !== 3) memory = seed();
+    if (!memory || memory.version !== 4) memory = seed();
     return memory;
   }
   function save() { try { localStorage.setItem(DB_KEY, JSON.stringify(memory)); } catch (e) { /* kept in memory */ } }
@@ -307,15 +306,15 @@
 
   // ── Example data for a first visit ─────────────────────────────────────────
   function seed() {
-    const db = { version: 3, seq: {}, users: [], records: [], versions: [], prices: [], alerts: [], customers: [],
+    const db = { version: 4, seq: {}, users: [], records: [], versions: [], prices: [], alerts: [], customers: [],
       payments: [], uploads: {}, settings: { ...DEFAULT_SETTINGS } };
     memory = db;
     const t = kenyaToday();
     const mk = (username, password, role, station, full_name) =>
       db.users.push({ id: nextId(db, 'user'), username, password, role, station, full_name, created_at: nowIso() });
     mk('owner', 'Fuel-Station-77', 'admin', null, 'Example Owner');
-    mk('mary', 'Branch-Boss-55', 'manager', 'Westlands Branch', 'Mary Wanjiku (example)');
-    mk('brian', 'Pump-Shift-55', 'staff', 'Westlands Branch', 'Brian Otieno (example)');
+    mk('mary', 'Branch-Boss-55', 'manager', 'Ngeria Branch', 'Mary Wanjiku (example)');
+    mk('brian', 'Pump-Shift-55', 'staff', 'Ngeria Branch', 'Brian Otieno (example)');
     const owner = db.users[0], brian = db.users[2], mary = db.users[1];
     const P = { petrol: [186.31, 171.2], diesel: [171.6, 158.4], kero: [161.75, 149.1] };
     STATIONS.forEach(st => FUELS.forEach(f => db.prices.push({ id: nextId(db, 'price'), station: st, fuel: f,
@@ -330,7 +329,7 @@
     for (let i = 6; i >= 1; i--) {
       const date = daysBefore(t, i), pl = 1550 + (i * 37) % 160, dl = 1180 + (i * 53) % 140, kl = 170 + (i * 11) % 30;
       const delivery = i === 4 ? 10000 : 0;
-      const body = { report_date: date, station: 'Westlands Branch', shift: 'Full Day',
+      const body = { report_date: date, station: 'Ngeria Branch', shift: 'Full Day',
         petrol_dip_open: pd, petrol_delivered: delivery, petrol_dip_close: pd + delivery - pl - (i === 3 ? 140 : 8),
         diesel_dip_open: dd, diesel_dip_close: dd - dl - 6, kero_dip_open: kd, kero_dip_close: kd - kl - 2,
         mpesa_amount: 0, cash_amount: 0, exp_wages: 9600, exp_elec: 3200, exp_water: 450,
@@ -367,7 +366,7 @@
     const y = db.records[db.records.length - 1];
     saveRecord(db, { ...y, exp_maint: 2500 }, owner);
     db.payments.push({ id: nextId(db, 'payment'), customer_id: 1, paid_on: daysBefore(t, 1), amount: 5000, method: 'M-Pesa',
-      reference: 'RGK7ABC123', station: 'Westlands Branch', by_user: 'mary', at: nowIso(), voided_at: null });
+      reference: 'RGK7ABC123', station: 'Ngeria Branch', by_user: 'mary', at: nowIso(), voided_at: null });
     save();
     return db;
   }

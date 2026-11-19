@@ -7,7 +7,7 @@ Uses only the Python standard library.
 
     python3 backend/server.py                       # http://localhost:8000
     python3 backend/server.py create-user NAME --role admin
-    python3 backend/server.py create-user NAME --role staff --station "Kisumu Branch"
+    python3 backend/server.py create-user NAME --role staff --station "Moiben Branch"
     python3 backend/server.py reset-password NAME
 
 Environment
@@ -93,8 +93,7 @@ TRUST_PROXY = os.environ.get("PK_TRUST_PROXY") == "1"
 KENYA_TZ = timezone(timedelta(hours=3))
 
 STATIONS = [
-    "Westlands Branch", "Himaki Branch", "Ngeria Branch", "Nairobi West Branch",
-    "Mombasa Road Branch", "Kisumu Branch", "Nakuru Branch",
+    "Ngeria Branch", "Himaki Branch", "Moiben Branch",
 ]
 
 mimetypes.add_type("application/manifest+json", ".webmanifest")
