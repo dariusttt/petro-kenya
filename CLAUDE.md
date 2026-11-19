@@ -5,6 +5,9 @@
   uncommitted. One commit per change, with a clear message saying what changed and why.
 - Push to the branch the live site runs from: `claude/petrokenya-station-dashboard-7djoop`.
   Render redeploys https://petrokenya.onrender.com automatically from it, so every push goes live.
+  The owner chose to keep Render on this branch (not `main`).
+- `main` is brought up to date from this branch now and then through a pull request (when the
+  owner asks); never push directly to `main`.
 
 ## Before each commit
 - Run the tests: `cd backend && python3 -m unittest discover -s tests` (all must pass).
