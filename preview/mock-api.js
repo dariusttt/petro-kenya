@@ -416,6 +416,21 @@
       db.stations.push(name);
       return { station: name, stations: db.stations };
     }
+    if ((m = path.match(/^\/api\/stations\/(.+)$/)) && method === 'PUT') {
+      requireAdmin(pu);
+      const old = decodeURIComponent(m[1]), name = String(body.name || '').replace(/\s+/g, ' ').trim();
+      if (!db.stations.includes(old)) fail(404, 'Branch not found');
+      if (!/^[A-Za-z0-9][A-Za-z0-9 .,'&()\/-]{1,59}$/.test(name)) fail(400, "Branch name must be 2-60 letters, numbers, spaces or . , ' & ( ) / -");
+      const taken = db.stations.find(x => x !== old && x.toLowerCase() === name.toLowerCase());
+      if (taken) fail(409, 'There is already a branch called ' + taken);
+      db.stations = db.stations.map(x => x === old ? name : x);
+      const move = o => { if (o && o.station === old) o.station = name; };
+      [db.records, db.users, db.prices, db.alerts, db.payments].forEach(list => (list || []).forEach(move));
+      (db.versions || []).forEach(v => move(v.data));
+      Object.values(db.uploads || {}).forEach(move);
+      (db.alerts || []).forEach(a => { if (a.station === name && a.message) a.message = a.message.split(old).join(name); });
+      return { station: name, stations: db.stations };
+    }
     if ((m = path.match(/^\/api\/stations\/(.+)$/)) && method === 'DELETE') {
       requireAdmin(pu);
       const name = decodeURIComponent(m[1]);

@@ -544,11 +544,46 @@ function renderStationPickers() {
     : '🏪 No branches have been set up yet. Ask the admin to add your branch.';
 }
 
+let RENAMING = null;   // the branch whose name is being edited in Account → Branches
+
 function renderStationsAdmin() {
   $('stationsList').innerHTML = STATIONS.length
-    ? STATIONS.map(n => `<div class="m-row"><span translate="no">🏪 ${esc(n)}</span>
-        <button class="btn btn-r btn-sm" onclick="removeStation(this.dataset.name)" data-name="${esc(n)}">Remove</button></div>`).join('')
+    ? STATIONS.map(n => n === RENAMING
+      ? `<div class="m-row" style="gap:8px;flex-wrap:wrap">
+          <input type="text" id="rsName" maxlength="60" value="${esc(n)}" style="flex:1;min-width:160px" translate="no"
+                 onkeydown="if(event.key==='Enter')renameStation();if(event.key==='Escape')cancelRename()">
+          <span style="display:flex;gap:6px"><button class="btn btn-g btn-sm" onclick="renameStation()">Save</button>
+          <button class="btn btn-o btn-sm" onclick="cancelRename()">Cancel</button></span></div>`
+      : `<div class="m-row"><span translate="no">🏪 ${esc(n)}</span>
+        <span style="display:flex;gap:6px">
+          <button class="btn btn-o btn-sm" onclick="startRename(this.dataset.name)" data-name="${esc(n)}">✏️ Rename</button>
+          <button class="btn btn-r btn-sm" onclick="removeStation(this.dataset.name)" data-name="${esc(n)}">Remove</button>
+        </span></div>`).join('')
     : '<div class="m-sub" style="margin:0">No branches yet — add the first one below.</div>';
+  if (RENAMING && $('rsName')) { $('rsName').focus(); $('rsName').select(); }
+}
+
+function startRename(name) { RENAMING = name; renderStationsAdmin(); }
+function cancelRename() { RENAMING = null; renderStationsAdmin(); }
+
+async function renameStation() {
+  if (!requireOnline('rename a branch')) return;
+  const old = RENAMING;
+  try {
+    const res = await api('PUT', '/stations/' + encodeURIComponent(old), { name: sv('rsName') });
+    RENAMING = null;
+    STATIONS = res.stations;
+    storeSet(STATIONS_KEY, { user: USER.username, stations: STATIONS });
+    // Keep everything that pointed at the old name on the new one
+    const onOld = ['fStation', 'filterStation', 'nuStation'].filter(id => $(id).value === old);
+    renderStationPickers();
+    onOld.forEach(id => { $(id).value = res.station; });
+    $('hStation').textContent = sv('fStation') || 'PetroKenya';
+    renderStationsAdmin();
+    await syncFromServer();
+    loadRecs(); loadUsers(); applyUserToUI(); loadRecordForDateAndStation();
+    toast(res.station === old ? '✅ Branch name unchanged' : '✅ Branch renamed — ' + old + ' → ' + res.station);
+  } catch (e) { toast('⚠️ ' + e.message, true); }
 }
 
 async function addStation() {

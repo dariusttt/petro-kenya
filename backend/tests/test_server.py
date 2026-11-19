@@ -889,3 +889,39 @@ class StationTest(ServerCase):
             again = server.Store(old_path)
             self.assertEqual(again.stations(), ["Old Town Branch"])
             again.conn.close()
+
+
+class RenameStationTest(ServerCase):
+    def test_renaming_a_branch_carries_everything_with_it(self):
+        store = self.httpd.RequestHandlerClass.store
+        self.admin.req("POST", "/api/stations", {"name": "Old Name Branch"})
+        self.admin.req("POST", "/api/users", {"username": "olduser", "password": "Mango-Tree-42",
+                                              "role": "staff", "station": "Old Name Branch"})
+        rid = self.admin.req("POST", "/api/records", {**SAMPLE, "station": "Old Name Branch", "cash_amount": 0})[1]["record"]["id"]
+        self.admin.req("POST", "/api/records", {**SAMPLE, "station": "Old Name Branch", "cash_amount": 5})
+        self.admin.req("POST", "/api/prices", {"stations": ["Old Name Branch"], "effective_from": "2026-10-01",
+                                               "petrol_sell": 190, "petrol_cost": 175})
+        staff = Client(self.base).login("kisumu")
+        self.assertEqual(staff.req("PUT", "/api/stations/Old%20Name%20Branch", {"name": "X Branch"})[0], 403)
+        self.assertEqual(self.admin.req("PUT", "/api/stations/Old%20Name%20Branch", {"name": "ngeria branch"})[0], 409)
+        self.assertEqual(self.admin.req("PUT", "/api/stations/Old%20Name%20Branch", {"name": "!"})[0], 400)
+        self.assertEqual(self.admin.req("PUT", "/api/stations/Nowhere", {"name": "Somewhere"})[0], 404)
+        status, res, _ = self.admin.req("PUT", "/api/stations/Old%20Name%20Branch", {"name": "New  Name Branch "})
+        self.assertEqual((status, res["station"]), (200, "New Name Branch"))
+        self.assertNotIn("Old Name Branch", res["stations"])
+        rec = self.admin.req("GET", "/api/records/%d" % rid)[1]
+        self.assertEqual(rec["station"], "New Name Branch")
+        self.assertEqual(len(self.admin.req("GET", "/api/records?station=New%20Name%20Branch")[1]["records"]), 1)
+        changes = [c["field"] for h in self.admin.req("GET", "/api/records/%d/history" % rid)[1]["history"]
+                   for c in h["changes"]]
+        self.assertNotIn("station", changes)                      # a rename isn't shown as an edit
+        moved = Client(self.base).login("olduser", "Mango-Tree-42")
+        self.assertEqual(moved.req("GET", "/api/me")[1]["user"]["station"], "New Name Branch")
+        self.assertEqual(moved.req("GET", "/api/prices?station=New+Name+Branch")[1]["prices"]["petrol"]["sell"], 190)
+        self.assertTrue(all(a["station"] == "New Name Branch" and "Old Name" not in a["message"]
+                            for a in self.admin.req("GET", "/api/alerts")[1]["alerts"]))
+        self.assertEqual(self.admin.req("PUT", "/api/stations/New%20Name%20Branch", {"name": "new name branch"})[0], 200)
+        store.conn.execute("DELETE FROM records WHERE station = 'new name branch'")
+        store.conn.execute("DELETE FROM users WHERE username = 'olduser'")
+        store.conn.execute("DELETE FROM stations WHERE name = 'new name branch'")
+        store.conn.commit()

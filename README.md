@@ -195,7 +195,8 @@ never in the code). Then use **Send Test Email** in Alert Settings.
 **Branches** are added by the admin under **👤 → 🏪 Branches**; a new install starts with none,
 and nothing can be recorded until the first branch exists. Every branch picker (Fuel Entry,
 users, prices, records filter) uses that list. A branch can only be removed while no saved days
-or users belong to it. (A database from before branches were managed keeps the branches its
+or users belong to it. **✏️ Rename** changes a branch's name everywhere at once: its saved days
+(and their history), users, prices, alerts, credit payments and photos. (A database from before branches were managed keeps the branches its
 users and records already use.)
 
 Admins manage users in the app under **👤**. From a terminal you can also run:

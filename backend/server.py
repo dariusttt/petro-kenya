@@ -23,7 +23,7 @@ Environment
 
 API (all JSON; everything except /api/health and /api/login needs a signed-in session)
     POST   /api/login  /api/logout       GET /api/me     POST /api/me/password
-    GET|POST /api/stations   DELETE /api/stations/<name> (admin; only unused)   POST /api/compute
+    GET|POST /api/stations   PUT /api/stations/<name> {name} (rename)   DELETE /api/stations/<name> (only unused)   POST /api/compute
     GET    /api/records?station=&date=&from=&to=&limit=
     POST   /api/records                  (upserts on report_date + station)
     GET|PUT|DELETE /api/records/<id>     DELETE /api/records?station=   (admin; moves to bin)
@@ -485,6 +485,42 @@ class Store:
             same = next((n for n in self.stations() if n.lower() == name.lower()), name)
             raise ApiError(HTTPStatus.CONFLICT, "There is already a branch called %s" % same)
         return name
+
+    def rename_station(self, old, new):
+        """Give a branch a new name everywhere it is stored, all at once: saved days and their
+        history, users, prices, alerts, credit payments and receipt photos."""
+        new = re.sub(r"\s+", " ", str(new or "")).strip()
+        if old not in self.stations():
+            raise ApiError(HTTPStatus.NOT_FOUND, "Branch not found")
+        if not STATION_NAME_RE.match(new):
+            raise ApiError(HTTPStatus.BAD_REQUEST,
+                           "Branch name must be 2-60 letters, numbers, spaces or . , ' & ( ) / -")
+        if new == old:
+            return new
+        taken = next((n for n in self.stations() if n.lower() == new.lower() and n != old), None)
+        if taken:
+            raise ApiError(HTTPStatus.CONFLICT, "There is already a branch called %s" % taken)
+        with self.lock:
+            c = self.conn
+            tables = {r["name"] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            try:
+                c.execute("UPDATE stations SET name = ? WHERE name = ?", (new, old))
+                c.execute("UPDATE records SET station = ?, data = json_set(data, '$.station', ?) WHERE station = ?",
+                          (new, new, old))
+                c.execute("UPDATE record_versions SET data = json_set(data, '$.station', ?) "
+                          "WHERE json_extract(data, '$.station') = ?", (new, old))
+                c.execute("UPDATE record_versions SET station = ? WHERE station = ?", (new, old))
+                for table in ("users", "prices", "credit_payments", "uploads"):
+                    if table in tables:
+                        c.execute("UPDATE %s SET station = ? WHERE station = ?" % table, (new, old))
+                if "alerts" in tables:
+                    c.execute("UPDATE alerts SET station = ?, message = replace(message, ?, ?) WHERE station = ?",
+                              (new, old, new, old))
+                c.commit()
+            except Exception:
+                c.rollback()
+                raise
+        return new
 
     def remove_station(self, name):
         """Only a branch nothing refers to can go, so no record or user is left without one."""
@@ -1233,6 +1269,10 @@ class Handler(BaseHTTPRequestHandler):
             name = self.store.add_station(self._body().get("name"), user["username"])
             return self._json(HTTPStatus.CREATED, {"station": name, "stations": self.store.stations()})
         mm = re.fullmatch(r"/api/stations/([^/]+)", path)
+        if mm and m == "PUT":
+            self._require_admin(user)
+            name = self.store.rename_station(unquote(mm.group(1)), self._body().get("name"))
+            return self._json(HTTPStatus.OK, {"station": name, "stations": self.store.stations()})
         if mm and m == "DELETE":
             self._require_admin(user)
             self.store.remove_station(unquote(mm.group(1)))

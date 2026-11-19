@@ -192,7 +192,7 @@ const SW = {
   // ── Record details ──
   'Fuel Sales': 'Mauzo ya Mafuta',
   'Pump Sales Meter Cross-Check': 'Ukaguzi wa Mita ya Mauzo', 'Branches (Admin)': 'Matawi (Msimamizi)', 'New branch name': 'Jina la tawi jipya',
-  'Add Branch': 'Ongeza Tawi', 'Remove': 'Ondoa', 'Remove branch?': 'Ondoa tawi?', '— No branch yet —': '— Bado hakuna tawi —',
+  'Add Branch': 'Ongeza Tawi', 'Rename': 'Badilisha Jina', 'Branch name unchanged': 'Jina la tawi halijabadilika', 'Remove': 'Ondoa', 'Remove branch?': 'Ondoa tawi?', '— No branch yet —': '— Bado hakuna tawi —',
   'No branches yet — add the first one below.': 'Bado hakuna matawi — ongeza la kwanza hapa chini.',
   'No branches yet. Add your first branch under 👤 Account → Branches, then you can start recording.':
     'Bado hakuna matawi. Ongeza tawi lako la kwanza kwenye 👤 Akaunti → Matawi, kisha unaweza kuanza kurekodi.',
@@ -278,6 +278,7 @@ const SW_PATTERNS = [
   [/^Margin: (.+)$/, 'Kiwango cha faida: $1'],
   [/^Branch added — (.+)$/, 'Tawi limeongezwa — $1'],
   [/^Branch removed — (.+)$/, 'Tawi limeondolewa — $1'],
+  [/^Branch renamed — (.+) → (.+)$/, 'Jina la tawi limebadilishwa — $1 → $2'],
   [/^Last backup: (.+)\. A new one is made every night; the latest 14 are kept on the server\.$/, 'Nakala ya mwisho: $1. Mpya hufanywa kila usiku; 14 za mwisho huhifadhiwa kwenye seva.'],
   [/^Last emailed (.+) to (.+)\.$/, 'Ilitumwa mara ya mwisho $1 kwa $2.'],
   [/^The last backup email failed: (.+)$/, 'Barua pepe ya nakala ya mwisho ilishindwa: $1'],
