@@ -12,8 +12,12 @@ import re
 import secrets
 import smtplib
 import sys
+import sqlite3
+import tempfile
 import threading
-from datetime import datetime
+import time
+import zipfile
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from http import HTTPStatus
 
@@ -30,6 +34,7 @@ DEFAULT_SETTINGS = {
     "low_stock_diesel": 3000,
     "low_stock_kero": 1000,
     "alert_emails": "",              # comma-separated addresses that get alert emails
+    "backup_emails": "",             # comma-separated addresses that get the nightly backup
 }
 
 
@@ -81,11 +86,11 @@ class Settings:
         for key, val in (changes or {}).items():
             if key not in DEFAULT_SETTINGS:
                 continue
-            if key == "alert_emails":
+            if key in ("alert_emails", "backup_emails"):
                 emails = [e.strip() for e in str(val or "").replace(";", ",").split(",") if e.strip()]
                 bad = [e for e in emails if "@" not in e or " " in e or len(e) > 120]
                 if bad or len(emails) > 20:
-                    raise Error(HTTPStatus.BAD_REQUEST, "Check the alert email addresses")
+                    raise Error(HTTPStatus.BAD_REQUEST, "Check the %s email addresses" % key.split("_")[0])
                 clean[key] = ", ".join(emails)
             else:
                 v = num(val)
@@ -118,12 +123,14 @@ class Mailer:
     def configured(self):
         return bool(self.host and self.sender)
 
-    def send_now(self, recipients, subject, body):
+    def send_now(self, recipients, subject, body, attachments=()):
         msg = EmailMessage()
         msg["From"] = self.sender
         msg["To"] = ", ".join(recipients)
         msg["Subject"] = subject
         msg.set_content(body)
+        for filename, data in attachments:
+            msg.add_attachment(data, maintype="application", subtype="zip", filename=filename)
         if self.port == 465:
             server = smtplib.SMTP_SSL(self.host, self.port, timeout=20)
         else:
@@ -574,3 +581,201 @@ class Uploads:
     def read(self, uid):
         with open(os.path.join(self.folder, uid), "rb") as f:
             return f.read()
+
+
+# ── Backups ───────────────────────────────────────────────────────────────────
+BACKUP_KEEP = 14                       # copies kept on the server
+BACKUP_EVERY = timedelta(hours=24)
+BACKUP_EMAIL_LIMIT = 20 * 1024 * 1024  # most mail services refuse attachments much bigger than this
+BACKUP_NAME_RE = re.compile(r"^petrokenya-backup-(\d{4}-\d{2}-\d{2}_\d{4})(?:-(\d+))?\.zip$")
+UPLOAD_NAME_RE = re.compile(r"^[0-9a-f]{32}$")
+DB_IN_ZIP = "petrokenya.sqlite3"
+KENYA = timezone(timedelta(hours=3))
+
+
+def snapshot_db(conn, lock, dest):
+    """A consistent copy of a live SQLite database, taken with SQLite's own backup API."""
+    out = sqlite3.connect(dest)
+    try:
+        with lock:
+            conn.backup(out)
+    finally:
+        out.close()
+
+
+class Backups:
+    """Nightly zip of the database and receipt photos: kept on the server (last 14),
+    emailed to the backup addresses (database only, to stay small) and downloadable."""
+
+    def __init__(self, store, settings, mailer, uploads_dir, folder):
+        self.store, self.settings, self.mailer = store, settings, mailer
+        self.uploads_dir, self.folder = uploads_dir, folder
+        self.lock = threading.Lock()
+        self.last_email = None          # {"at", "to", "ok", "error"} of the latest emailed backup
+        os.makedirs(folder, exist_ok=True)
+
+    def list(self):
+        def newest_first(name):
+            m = BACKUP_NAME_RE.match(name)
+            return (m.group(1), int(m.group(2) or 1))
+        out = []
+        for name in sorted((n for n in os.listdir(self.folder) if BACKUP_NAME_RE.match(n)), key=newest_first, reverse=True):
+            full = os.path.join(self.folder, name)
+            out.append({"name": name, "size": os.path.getsize(full),
+                        "at": datetime.fromtimestamp(os.path.getmtime(full), timezone.utc)
+                        .isoformat(timespec="seconds").replace("+00:00", "Z")})
+        return out
+
+    def path(self, name):
+        if not BACKUP_NAME_RE.match(name or "") or not os.path.isfile(os.path.join(self.folder, name)):
+            raise Error(HTTPStatus.NOT_FOUND, "Backup not found")
+        return os.path.join(self.folder, name)
+
+    def _db_snapshot(self, tmpdir):
+        db = os.path.join(tmpdir, DB_IN_ZIP)
+        snapshot_db(self.store.conn, self.store.lock, db)
+        return db
+
+    def create(self, by="system"):
+        """Write a new backup zip; returns its listing entry."""
+        with self.lock, tempfile.TemporaryDirectory() as tmp:
+            db = self._db_snapshot(tmp)
+            stamp = datetime.now(KENYA).strftime("%Y-%m-%d_%H%M")
+            # Same minute as an earlier backup: number it after the highest one, even if older ones were pruned
+            taken = [int(m.group(2) or 1) for m in map(BACKUP_NAME_RE.match, os.listdir(self.folder))
+                     if m and m.group(1) == stamp]
+            n = max(taken) + 1 if taken else 1
+            name = "petrokenya-backup-%s%s.zip" % (stamp, "-%d" % n if n > 1 else "")
+            part = os.path.join(self.folder, name + ".part")
+            with zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED) as z:
+                z.write(db, DB_IN_ZIP)
+                photos = [f for f in os.listdir(self.uploads_dir) if UPLOAD_NAME_RE.match(f)] \
+                    if os.path.isdir(self.uploads_dir) else []
+                for f in photos:
+                    z.write(os.path.join(self.uploads_dir, f), "uploads/" + f)
+                z.writestr("backup-info.json", json.dumps(
+                    {"made_at": datetime.now(KENYA).isoformat(timespec="seconds"), "by": by,
+                     "photos": len(photos)}, indent=1))
+            os.replace(part, os.path.join(self.folder, name))
+        for old in self.list()[BACKUP_KEEP:]:
+            os.remove(os.path.join(self.folder, old["name"]))
+        return next(b for b in self.list() if b["name"] == name)
+
+    def email(self):
+        """Email a database-only copy to the backup addresses. Returns where it went."""
+        to = [e.strip() for e in self.settings.all()["backup_emails"].split(",") if e.strip()]
+        if not self.mailer.configured:
+            raise Error(HTTPStatus.BAD_REQUEST, "Email isn't set up on the server (PK_SMTP_HOST and friends)")
+        if not to:
+            raise Error(HTTPStatus.BAD_REQUEST, "Add at least one backup email address first")
+        day = datetime.now(KENYA).strftime("%Y-%m-%d")
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db_snapshot(tmp)
+            buf = os.path.join(tmp, "db.zip")
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                z.write(db, DB_IN_ZIP)
+            with open(buf, "rb") as f:
+                data = f.read()
+        self.last_email = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                           "to": to, "ok": False, "error": None}
+        if len(data) > BACKUP_EMAIL_LIMIT:
+            self.last_email["error"] = "The database is too big to email — download backups instead"
+            raise Error(HTTPStatus.BAD_REQUEST, self.last_email["error"])
+        try:
+            self.mailer.send_now(
+                to, "PetroKenya backup %s" % day,
+                "Attached is the PetroKenya database as of %s (receipt photos are not included).\n\n"
+                "Keep this email: to restore, stop the app and run\n"
+                "    python3 backend/server.py restore petrokenya-db-%s.zip\n" % (day, day),
+                [("petrokenya-db-%s.zip" % day, data)])
+        except Exception as e:
+            self.last_email["error"] = str(e)[:200]
+            raise Error(HTTPStatus.BAD_GATEWAY, "The mail server refused: %s" % e)
+        self.last_email["ok"] = True
+        return to
+
+    def due(self):
+        newest = self.list()[:1]
+        if not newest:
+            return True
+        made = datetime.fromisoformat(newest[0]["at"].replace("Z", "+00:00"))
+        return datetime.now(timezone.utc) - made >= BACKUP_EVERY
+
+    def run_due(self):
+        """Back up (and email, if addresses are set) when the last backup is a day old."""
+        if not self.due():
+            return False
+        self.create()
+        if self.mailer.configured and self.settings.all()["backup_emails"]:
+            try:
+                self.email()
+            except Error as e:
+                sys.stderr.write("Backup email failed: %s\n" % e.message)
+        return True
+
+    def start(self, check_every=600):
+        def loop():
+            while True:
+                try:
+                    self.run_due()
+                except Exception as e:  # pragma: no cover - keep the schedule alive
+                    sys.stderr.write("Backup failed: %r\n" % e)
+                time.sleep(check_every)
+        threading.Thread(target=loop, daemon=True, name="backups").start()
+
+
+def restore(zip_path, db_path, uploads_dir, backups_dir):
+    """Put a backup back in place (the app must be stopped). The current database is
+    saved into the backups folder first, so a restore can itself be undone."""
+    try:
+        z = zipfile.ZipFile(zip_path)
+    except (OSError, zipfile.BadZipFile):
+        raise Error(HTTPStatus.BAD_REQUEST, "That isn't a PetroKenya backup zip")
+    with z, tempfile.TemporaryDirectory() as tmp:
+        if DB_IN_ZIP not in z.namelist():
+            raise Error(HTTPStatus.BAD_REQUEST, "No %s inside that zip" % DB_IN_ZIP)
+        new_db = os.path.join(tmp, DB_IN_ZIP)
+        with z.open(DB_IN_ZIP) as src, open(new_db, "wb") as dst:
+            dst.write(src.read())
+        try:
+            check = sqlite3.connect(new_db)
+            tables = {r[0] for r in check.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            ok = check.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            days = check.execute("SELECT COUNT(*) FROM records").fetchone()[0] if "records" in tables else 0
+            check.close()
+        except sqlite3.DatabaseError:
+            ok, tables = False, set()
+        if not ok or not {"records", "users"} <= tables:
+            raise Error(HTTPStatus.BAD_REQUEST, "The database in that zip is damaged or not PetroKenya's")
+        saved = None
+        if os.path.exists(db_path):
+            os.makedirs(backups_dir, exist_ok=True)
+            saved = os.path.join(backups_dir, "before-restore-%s.sqlite3" % datetime.now(KENYA).strftime("%Y-%m-%d_%H%M%S"))
+            try:
+                cur = sqlite3.connect(db_path)
+                try:
+                    snapshot_db(cur, threading.Lock(), saved)
+                finally:
+                    cur.close()
+            except sqlite3.DatabaseError:        # damaged: keep its raw bytes instead
+                _copy(db_path, saved)
+        for extra in ("-wal", "-shm"):
+            if os.path.exists(db_path + extra):
+                os.remove(db_path + extra)
+        _copy(new_db, db_path)
+        photos = 0
+        os.makedirs(uploads_dir, exist_ok=True)
+        for name in z.namelist():
+            base = name[len("uploads/"):] if name.startswith("uploads/") else None
+            if base and UPLOAD_NAME_RE.match(base):       # only real photo names: nothing can escape the folder
+                with z.open(name) as src, open(os.path.join(uploads_dir, base), "wb") as dst:
+                    dst.write(src.read())
+                photos += 1
+    return {"days": days, "photos": photos, "saved_current_as": saved}
+
+
+def _copy(src, dst):
+    tmp = dst + ".restoring"
+    with open(src, "rb") as a, open(tmp, "wb") as b:
+        b.write(a.read())
+    os.replace(tmp, dst)

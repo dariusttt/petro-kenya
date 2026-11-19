@@ -27,7 +27,7 @@
   const FUEL_NAMES = { petrol: 'Petrol', diesel: 'Diesel', kero: 'Kerosene' };
   const VAT = 0.16, EX = { petrol: 21.95, diesel: 7.21, kero: 7.19 };
   const DEFAULT_SETTINGS = { dip_shortage_litres: 50, cash_shortage_kes: 1000, attendant_shortage_kes: 500,
-    short_delivery_litres: 50, low_stock_petrol: 3000, low_stock_diesel: 3000, low_stock_kero: 1000, alert_emails: '' };
+    short_delivery_litres: 50, low_stock_petrol: 3000, low_stock_diesel: 3000, low_stock_kero: 1000, alert_emails: '', backup_emails: '' };
 
   const num = v => { const f = parseFloat(v); return Number.isFinite(f) ? f : 0; };
   const r2 = v => Math.round((v + Number.EPSILON) * 100) / 100;
@@ -539,10 +539,22 @@
     if (path === '/api/settings') {
       requireAdmin(pu);
       if (method === 'PUT') Object.keys(DEFAULT_SETTINGS).forEach(k => {
-        if (k in body) db.settings[k] = k === 'alert_emails' ? String(body[k] || '') : Math.max(0, num(body[k]));
+        if (k in body) db.settings[k] = /_emails$/.test(k) ? String(body[k] || '') : Math.max(0, num(body[k]));
       });
       return { settings: db.settings, email_configured: false };
     }
+    if (path === '/api/backups') {
+      requireAdmin(pu);
+      db.backups = db.backups || [];
+      if (method === 'POST') {
+        const at = nowIso(), stamp = new Date(Date.now() + 3 * 3600e3).toISOString().slice(0, 16).replace('T', '_').replace(':', '');
+        const backup = { name: 'petrokenya-backup-' + stamp + '.zip', size: JSON.stringify(db).length, at };
+        db.backups = [backup, ...db.backups].slice(0, 14);
+        return { backup, backups: db.backups };
+      }
+      return { backups: db.backups, email_configured: false, backup_emails: db.settings.backup_emails || '', last_email: null };
+    }
+    if (path === '/api/backups/email') fail(400, "The website preview can't send email — this works once the app is hosted");
     if (path === '/api/settings/test-email') fail(400, "The website preview can't send email — this works once the app is hosted");
     if (path.startsWith('/api/reports/monthly')) {
       const month = q.month || kenyaToday().slice(0, 7), st = scope(pu, q.station);
@@ -602,6 +614,7 @@
   };
 
   // Photos live in this browser, so images point at the stored copy
+  window.pkPreview = true;
   window.pkUploadUrl = id => (load().uploads[id] || {}).data || '';
 
   // Start over with fresh example data

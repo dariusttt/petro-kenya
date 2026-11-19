@@ -1,5 +1,6 @@
 # One-click hosting on Render (https://render.com) — New → Blueprint → pick this repo.
-# The persistent disk keeps the SQLite database across deploys (requires a paid instance).
+# The persistent disk keeps the SQLite database, receipt photos and nightly backups across
+# deploys (requires a paid instance). Step-by-step guide: README → Put it online.
 services:
   - type: web
     name: petrokenya
@@ -9,6 +10,8 @@ services:
     startCommand: python3 backend/server.py
     healthCheckPath: /api/health
     envVars:
+      - key: PYTHONUNBUFFERED    # show the server's messages in Render's log straight away
+        value: "1"
       - key: HOST
         value: 0.0.0.0
       - key: PK_DB

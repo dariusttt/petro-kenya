@@ -479,6 +479,8 @@ function openAccount() {
   if (USER.role === 'admin') loadUsers();
   $('alertSettingsSec').hidden = USER.role !== 'admin';
   if (USER.role === 'admin') loadAlertSettings();
+  $('backupSec').hidden = USER.role !== 'admin';
+  if (USER.role === 'admin') loadBackups();
   $('accountOverlay').classList.add('open');
 }
 function closeAccount() { $('accountOverlay').classList.remove('open'); }
@@ -1120,6 +1122,55 @@ async function testAlertEmail() {
     const { sent_to } = await api('POST', '/settings/test-email', {});
     toast('✉️ Test email sent to ' + sent_to.join(', '));
   } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+// ── Backups (admin) ───────────────────────────────────────────────────────────
+const fmtWhen = iso => new Date(iso).toLocaleString(LOCALE, { timeZone: 'Africa/Nairobi', day: 'numeric', month: 'short',
+  hour: '2-digit', minute: '2-digit' });
+
+async function loadBackups() {
+  let res;
+  try { res = await api('GET', '/backups'); }
+  catch (e) { $('bkState').textContent = ONLINE ? e.message : 'Backups need an internet connection.'; return; }
+  $('bkEmails').value = res.backup_emails || '';
+  const newest = res.backups[0];
+  const last = res.last_email;
+  $('bkState').innerHTML = [
+    newest ? `✅ Last backup: ${esc(fmtWhen(newest.at))}. A new one is made every night; the latest 14 are kept on the server.`
+      : '⚠️ No backup yet — the first one is made within a few minutes of the server starting.',
+    !res.email_configured ? '✉️ Email isn\'t set up on the server, so backups are not emailed yet (see README: PK_SMTP_*).'
+      : !res.backup_emails ? '✉️ Add an email address below so a copy of each night\'s backup leaves the server.'
+      : last ? (last.ok ? `✉️ Last emailed ${esc(fmtWhen(last.at))} to ${esc(last.to.join(', '))}.`
+                        : `⚠️ The last backup email failed: ${esc(last.error || 'unknown error')}`)
+      : '✉️ Each night\'s backup is emailed to the addresses below.',
+  ].map(line => `<div>${line}</div>`).join('');
+  $('bkList').innerHTML = res.backups.map(b => `<div class="m-row"><span>${esc(fmtWhen(b.at))} · ${fmt(b.size / 1024)} KB</span>
+    <a class="btn btn-o btn-sm" href="/api/backups/${encodeURIComponent(b.name)}" download>⬇️ Download</a></div>`).join('');
+}
+
+async function saveBackupEmails() {
+  try { await api('PUT', '/settings', { backup_emails: sv('bkEmails') }); toast('✅ Backup email saved'); loadBackups(); }
+  catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+async function backupNow() {
+  try {
+    const { backup } = await api('POST', '/backups', {});
+    toast('✅ Backup made — ' + backup.name);
+    await loadBackups();
+    if (window.pkPreview) return;                            // the website preview has no files to hand out
+    const link = document.createElement('a');                // and hand the owner a copy
+    link.href = '/api/backups/' + encodeURIComponent(backup.name); link.download = backup.name;
+    document.body.appendChild(link); link.click(); link.remove();
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+async function emailBackupNow() {
+  try {
+    const { sent_to } = await api('POST', '/backups/email', {});
+    toast('✉️ Backup emailed to ' + sent_to.join(', '));
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+  loadBackups();
 }
 
 // ── Monthly report ────────────────────────────────────────────────────────────

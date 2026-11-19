@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta
 from http.cookiejar import CookieJar
 from urllib.error import HTTPError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
@@ -588,8 +589,9 @@ class FakeMailer:
             self.sent.append((to, subject, body))
         return bool(to)
 
-    def send_now(self, to, subject, body):
+    def send_now(self, to, subject, body, attachments=()):
         self.send(to, subject, body)
+        self.attachments = list(attachments)
 
 
 class BusinessTest(ServerCase):
@@ -756,3 +758,86 @@ class BootstrapTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BackupTest(ServerCase):
+    """Backups: made by admins or the nightly schedule, kept 14 deep, emailed, and restorable."""
+
+    def setUp(self):
+        super().setUp()
+        self.backups = self.httpd.RequestHandlerClass.backups
+        for b in self.backups.list():
+            os.remove(os.path.join(self.backups.folder, b["name"]))
+
+    def test_only_admins_back_up_and_download(self):
+        import io
+        import zipfile
+        self.admin.req("POST", "/api/records", SAMPLE)
+        staff = Client(self.base).login("kisumu")
+        self.assertEqual(staff.req("POST", "/api/backups", {})[0], 403)
+        self.assertEqual(staff.req("GET", "/api/backups")[0], 403)
+        status, res, _ = self.admin.req("POST", "/api/backups", {})
+        self.assertEqual(status, 201)
+        name = res["backup"]["name"]
+        self.assertEqual([b["name"] for b in self.admin.req("GET", "/api/backups")[1]["backups"]], [name])
+        self.assertEqual(staff.req("GET", "/api/backups/" + name)[0], 403)
+        self.assertEqual(self.admin.req("GET", "/api/backups/../t.sqlite3")[0], 404)
+        self.assertEqual(self.admin.req("GET", "/api/backups/nope.zip")[0], 404)
+        r = self.admin.opener.open(self.base + "/api/backups/" + name)
+        self.assertEqual(r.headers["Content-Type"], "application/zip")
+        with zipfile.ZipFile(io.BytesIO(r.read())) as z:
+            self.assertIn("petrokenya.sqlite3", z.namelist())
+
+    def test_only_the_latest_fourteen_are_kept_and_the_schedule_waits_a_day(self):
+        for _ in range(16):
+            self.backups.create()
+        self.assertEqual(len(self.backups.list()), 14)
+        self.assertFalse(self.backups.due())
+        self.assertFalse(self.backups.run_due())
+        old = (datetime.now() - timedelta(hours=25)).timestamp()
+        for b in self.backups.list():
+            os.utime(os.path.join(self.backups.folder, b["name"]), (old, old))
+        self.assertTrue(self.backups.due())
+
+    def test_backup_email_carries_the_database(self):
+        import io
+        import zipfile
+        handler = self.httpd.RequestHandlerClass
+        real, handler.backups.mailer = handler.backups.mailer, FakeMailer()
+        try:
+            self.assertEqual(self.admin.req("POST", "/api/backups/email", {})[0], 400)   # no address yet
+            self.assertEqual(self.admin.req("PUT", "/api/settings", {"backup_emails": "not-an-email"})[0], 400)
+            self.admin.req("PUT", "/api/settings", {"backup_emails": "owner@example.com"})
+            status, res, _ = self.admin.req("POST", "/api/backups/email", {})
+            self.assertEqual((status, res["sent_to"]), (200, ["owner@example.com"]))
+            filename, data = handler.backups.mailer.attachments[0]
+            self.assertTrue(filename.startswith("petrokenya-db-"))
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                self.assertEqual(z.namelist(), ["petrokenya.sqlite3"])
+            self.assertTrue(self.admin.req("GET", "/api/backups")[1]["last_email"]["ok"])
+        finally:
+            handler.backups.mailer = real
+
+    def test_restore_brings_a_backup_back_and_keeps_the_replaced_database(self):
+        import business
+        self.admin.req("POST", "/api/records", SAMPLE)
+        made = self.backups.create()
+        zip_path = os.path.join(self.backups.folder, made["name"])
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "live.sqlite3")
+            with open(target, "w") as f:
+                f.write("this will be replaced")
+            done = business.restore(zip_path, target, os.path.join(tmp, "up"), os.path.join(tmp, "bk"))
+            self.assertEqual(done["days"], 1)
+            with open(done["saved_current_as"]) as f:                 # a damaged file is kept as it was
+                self.assertEqual(f.read(), "this will be replaced")
+            restored = server.Store(target)
+            self.assertEqual(restored.list()[0]["report_date"], SAMPLE["report_date"])
+            restored.conn.close()
+            again = business.restore(zip_path, target, os.path.join(tmp, "up"), os.path.join(tmp, "bk"))
+            self.assertTrue(os.path.exists(again["saved_current_as"]))
+            bad = os.path.join(tmp, "bad.zip")
+            with open(bad, "wb") as f:
+                f.write(b"not a zip")
+            with self.assertRaises(business.Error):
+                business.restore(bad, target, os.path.join(tmp, "up"), os.path.join(tmp, "bk"))

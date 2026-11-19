@@ -41,6 +41,7 @@ API (all JSON; everything except /api/health and /api/login needs a signed-in se
     GET|PUT /api/settings   POST /api/settings/test-email   (admin)
     GET    /api/reports/monthly?month=YYYY-MM&station=   (.csv for a download)
     POST   /api/uploads {data: base64 photo, station}   GET /api/uploads/<id>
+    GET|POST /api/backups   POST /api/backups/email   GET /api/backups/<name>   (admin)
     GET    /api/analytics?station=       GET /api/export.csv?station=
     GET|POST /api/users   DELETE /api/users/<id>   POST /api/users/<id>/password   (admin)
 
@@ -1410,6 +1411,28 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(HTTPStatus.BAD_GATEWAY, "The mail server refused: %s" % e)
             return self._json(HTTPStatus.OK, {"sent_to": to})
 
+        # ── Backups (admin): list, make one now, email one now, download ──
+        if path == "/api/backups":
+            self._require_admin(user)
+            if m == "GET":
+                return self._json(HTTPStatus.OK, {
+                    "backups": self.backups.list(), "email_configured": self.mailer.configured,
+                    "backup_emails": self.settings.all()["backup_emails"], "last_email": self.backups.last_email})
+            if m == "POST":
+                made = self.backups.create(by=user["username"])
+                return self._json(HTTPStatus.CREATED, {"backup": made, "backups": self.backups.list()})
+        if path == "/api/backups/email" and m == "POST":
+            self._require_admin(user)
+            return self._json(HTTPStatus.OK, {"sent_to": self.backups.email()})
+        mm = re.fullmatch(r"/api/backups/([A-Za-z0-9_.-]+)", path)
+        if mm and m == "GET":
+            self._require_admin(user)
+            full = self.backups.path(mm.group(1))
+            with open(full, "rb") as f:
+                data = f.read()
+            return self._send(HTTPStatus.OK, data, "application/zip",
+                              {"Content-Disposition": 'attachment; filename="%s"' % mm.group(1)})
+
         # ── Monthly report ──
         if path in ("/api/reports/monthly", "/api/reports/monthly.csv") and m == "GET":
             month = q.get("month") or today()[:7]
@@ -1504,6 +1527,13 @@ def bootstrap_admin(auth):
     print("   └──────────────────────────────────────────────────────────┘")
 
 
+def data_dirs(db_path):
+    """Receipt photos and backups live next to the database unless PK_UPLOADS / PK_BACKUPS say otherwise."""
+    here = os.path.dirname(os.path.abspath(db_path))
+    return (os.environ.get("PK_UPLOADS") or os.path.join(here, "uploads"),
+            os.environ.get("PK_BACKUPS") or os.path.join(here, "backups"))
+
+
 def make_server(host=HOST, port=PORT, db_path=DB_PATH, bootstrap=True):
     store = Store(db_path)
     auth = Auth(store)
@@ -1511,16 +1541,38 @@ def make_server(host=HOST, port=PORT, db_path=DB_PATH, bootstrap=True):
         bootstrap_admin(auth)
     settings = business.Settings(store)
     mailer = business.Mailer()
-    uploads_dir = os.environ.get("PK_UPLOADS") or os.path.join(os.path.dirname(os.path.abspath(db_path)), "uploads")
+    uploads_dir, backups_dir = data_dirs(db_path)
     handler = type("BoundHandler", (Handler,), {
         "store": store, "auth": auth, "settings": settings, "mailer": mailer,
         "alerts": business.Alerts(store, settings, mailer), "credit": business.Credit(store),
-        "uploads": business.Uploads(store, uploads_dir)})
+        "uploads": business.Uploads(store, uploads_dir),
+        "backups": business.Backups(store, settings, mailer, uploads_dir, backups_dir)})
     return ThreadingHTTPServer((host, port), handler)
 
 
 def cli(argv):
-    """create-user NAME [--role admin|staff] [--station NAME] [--name "Full Name"]  |  reset-password NAME"""
+    """create-user NAME [--role admin|manager|staff] [--station NAME] [--name "Full Name"]
+    reset-password NAME
+    backup                 (writes a backup zip into the backups folder now)
+    restore BACKUP.zip     (stop the app first; the current database is kept as a copy)"""
+    if argv and argv[0] == "restore":
+        if len(argv) != 2:
+            sys.exit(cli.__doc__)
+        uploads_dir, backups_dir = data_dirs(DB_PATH)
+        try:
+            done = business.restore(argv[1], DB_PATH, uploads_dir, backups_dir)
+        except business.Error as e:
+            sys.exit("Error: " + e.message)
+        print("Restored %d days and %d photos into %s" % (done["days"], done["photos"], DB_PATH))
+        if done["saved_current_as"]:
+            print("The database it replaced was saved as %s" % done["saved_current_as"])
+        return
+    if argv and argv[0] == "backup":
+        httpd = make_server(port=0, bootstrap=False)
+        made = httpd.RequestHandlerClass.backups.create(by="command line")
+        httpd.server_close()
+        print("Backup written: %s (%d KB)" % (os.path.join(data_dirs(DB_PATH)[1], made["name"]), made["size"] // 1024))
+        return
     store = Store(DB_PATH)
     auth = Auth(store)
     cmd, name, opts = argv[0], argv[1] if len(argv) > 1 else None, argv[2:]
@@ -1549,6 +1601,7 @@ def main():
     if len(sys.argv) > 1:
         return cli(sys.argv[1:])
     httpd = make_server()
+    httpd.RequestHandlerClass.backups.start()      # nightly backups (and backup emails)
     host, port = httpd.server_address[:2]
     shown = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
     print(f"⛽ PetroKenya running at http://{shown}:{port}")

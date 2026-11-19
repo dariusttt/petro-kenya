@@ -44,17 +44,54 @@ and offline mode need HTTPS, so for those, host it online — see below.)
 
 ## Put it online (so every branch can use it)
 
-**Render** (simplest): push this repo to GitHub → render.com → *New → Blueprint* →
-choose the repo. Render reads `render.yaml`, asks for `PK_ADMIN_PASSWORD`, and gives
-you an `https://….onrender.com` address. The 1 GB disk keeps the database between
-deploys (this needs Render's paid *Starter* instance; on a free instance the data
-would be wiped on every restart).
+**Render** (simplest). `render.yaml` already describes everything; Render only needs an account.
+
+1. Sign up at [render.com](https://render.com) with your GitHub account, and allow Render to see
+   this repository.
+2. **New → Blueprint**, pick this repository and the branch to run (the one with this code).
+3. Render shows the settings from `render.yaml` and asks for the secret ones:
+   - `PK_ADMIN_PASSWORD` — the owner's first password: 8+ characters, not a common password,
+     and not containing the word "admin". If it's refused, the deploy log says why.
+   - `PK_SMTP_HOST`, `PK_SMTP_USER`, `PK_SMTP_PASSWORD` — for alert and backup emails
+     (Gmail: `smtp.gmail.com`, your address, and an app password — see *Alert emails* below).
+     They can be left empty now and added later under the service's *Environment*.
+4. **Apply.** The first deploy takes a few minutes. Your address is
+   `https://petrokenya.onrender.com` (or similar), shown at the top of the service page.
+5. Open it, sign in as `admin` with the password from step 3, then under **👤**:
+   change the password, add each branch's users, and add a **backup email** address.
+
+Cost: the *Starter* instance plus the 1 GB disk (about US$7–8 a month). The disk is what
+keeps the database between deploys; Render's free instance has no disk, so its data would
+be wiped on every restart. Each push to the chosen branch redeploys automatically.
 
 **Railway** also works: create a service from the repo (it uses the `Procfile`),
 add a volume mounted at `/data`, and set `PK_DB=/data/petrokenya.sqlite3`,
 `PK_ADMIN_USER`, `PK_ADMIN_PASSWORD`, `PK_SECURE_COOKIE=1` and `PK_TRUST_PROXY=1`.
 
-Back up the database by downloading the `.sqlite3` file, or use **📥 Export CSV**.
+## Backups
+
+- **Every night** the server writes a backup zip (the database and receipt photos) into a
+  `backups` folder next to the database — on Render, on the same disk. The latest 14 are kept.
+- **Off the server:** add addresses under **👤 → 💾 Backups**, and each night's database is
+  also emailed there (photos are left out to keep the email small). This copy survives even
+  if the server or its disk is lost. Needs the `PK_SMTP_*` mail settings.
+- **On demand:** **⬇️ Back Up Now** makes a backup and downloads it; earlier ones can be
+  downloaded from the list. **✉️ Email a Backup Now** sends one straight away.
+- From a terminal: `python3 backend/server.py backup`.
+
+**Restoring** (stop the app first):
+
+```bash
+python3 backend/server.py restore petrokenya-backup-2026-11-14_2300.zip
+```
+
+It checks the zip holds a sound PetroKenya database, keeps the database it replaces as
+`backups/before-restore-….sqlite3` (so a restore can be undone), then puts the backup and its
+photos in place. On Render: open the service's **Shell** tab, put the zip in `/var/data`
+(for example with `curl -o /var/data/restore.zip <link to the file>`), run
+`python3 backend/server.py restore /var/data/restore.zip`, then use **Manual Deploy → Restart
+service** so the app reopens the restored database. Ask for help the first time — a restore
+replaces what's there now.
 
 ## Install on a phone
 
@@ -170,9 +207,10 @@ python3 backend/server.py reset-password mary
 | `HOST` | `127.0.0.1` | `0.0.0.0` to accept connections from other devices / when hosted |
 | `PK_DB` | `backend/petrokenya.sqlite3` | Database file |
 | `PK_UPLOADS` | `uploads` next to the database | Folder for receipt photos |
+| `PK_BACKUPS` | `backups` next to the database | Folder for the nightly backups |
 | `PK_ADMIN_USER`, `PK_ADMIN_PASSWORD` | — | Admin created on first start (otherwise `admin` + random password) |
 | `PK_SECURE_COOKIE` | auto | `1` forces the Secure cookie flag (auto when behind an HTTPS proxy) |
-| `PK_SMTP_HOST`, `PK_SMTP_PORT`, `PK_SMTP_USER`, `PK_SMTP_PASSWORD`, `PK_SMTP_FROM` | — | Mail account for alert emails (port 587 uses STARTTLS, 465 uses SSL) |
+| `PK_SMTP_HOST`, `PK_SMTP_PORT`, `PK_SMTP_USER`, `PK_SMTP_PASSWORD`, `PK_SMTP_FROM` | — | Mail account for alert and backup emails (port 587 uses STARTTLS, 465 uses SSL) |
 | `PK_TRUST_PROXY` | off | `1` reads the visitor's address from `X-Forwarded-For`. Set it **only** behind a proxy you control (Render, Railway); never when the server faces the internet directly |
 
 ## API

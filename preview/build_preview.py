@@ -20,7 +20,7 @@ PREVIEW_CSS = """
 /* ════ WEBSITE PREVIEW ONLY ════ */
 :root{color-scheme:dark}
 body.preview [onclick*="print"],body.preview [onclick*="exportCSV"],
-body.preview [onclick*="downloadReportCSV"],body.preview #installBtn{display:none!important}
+body.preview [onclick*="downloadReportCSV"],body.preview #installBtn,body.preview #bkList a{display:none!important}
 .preview-bar{display:flex;align-items:center;gap:10px 16px;flex-wrap:wrap;margin-bottom:16px;padding:12px 16px;
   border:1px dashed rgba(91,184,224,.4);border-radius:10px;background:rgba(91,184,224,.06);
   font-family:var(--mono);font-size:.74rem;color:var(--blue);line-height:1.6}

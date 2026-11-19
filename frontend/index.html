@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PetroKenya">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/styles.css?v=13">
+<link rel="stylesheet" href="css/styles.css?v=14">
 </head>
 <body>
 
@@ -1157,6 +1157,19 @@
       </div>
     </div>
 
+    <div class="m-sec" id="backupSec" hidden>
+      <div class="m-sec-ttl">💾 Backups (Admin)</div>
+      <div class="m-sub" id="bkState" style="margin:0 0 10px"></div>
+      <div class="ig"><label for="bkEmails">Email the nightly backup to (comma-separated)</label>
+        <input type="text" id="bkEmails" placeholder="owner@example.com"></div>
+      <div class="actions" style="margin-top:10px">
+        <button class="btn btn-g btn-sm" onclick="saveBackupEmails()">💾 Save</button>
+        <button class="btn btn-o btn-sm" onclick="backupNow()">⬇️ Back Up Now</button>
+        <button class="btn btn-o btn-sm" onclick="emailBackupNow()">✉️ Email a Backup Now</button>
+      </div>
+      <div id="bkList" style="margin-top:10px"></div>
+    </div>
+
     <div class="m-foot">
       <button class="btn btn-o" onclick="logoutOtherDevices()">Sign out other devices</button>
       <button class="btn btn-r" onclick="logout()">⎋ Sign out</button>
@@ -1231,7 +1244,7 @@
 
 <div id="toast"></div>
 
-<script src="js/i18n.js?v=13"></script>
-<script src="js/app.js?v=13"></script>
+<script src="js/i18n.js?v=14"></script>
+<script src="js/app.js?v=14"></script>
 </body>
 </html>
