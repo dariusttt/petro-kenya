@@ -114,11 +114,15 @@ class Mailer:
     PK_SMTP_FROM (defaults to the user)."""
 
     def __init__(self):
-        self.host = os.environ.get("PK_SMTP_HOST", "")
-        self.port = int(os.environ.get("PK_SMTP_PORT", "587") or 587)
-        self.user = os.environ.get("PK_SMTP_USER", "")
-        self.password = os.environ.get("PK_SMTP_PASSWORD", "")
-        self.sender = os.environ.get("PK_SMTP_FROM", "") or self.user
+        # Pasted settings often carry stray spaces or line breaks; Gmail shows app passwords
+        # in groups of four ("abcd efgh ijkl mnop"), which must be sent without the spaces
+        self.host = os.environ.get("PK_SMTP_HOST", "").strip()
+        self.port = int((os.environ.get("PK_SMTP_PORT", "") or "587").strip() or 587)
+        self.user = os.environ.get("PK_SMTP_USER", "").strip()
+        self.password = os.environ.get("PK_SMTP_PASSWORD", "").strip()
+        if self.host.lower() in ("smtp.gmail.com", "smtp.googlemail.com"):
+            self.password = "".join(self.password.split())
+        self.sender = os.environ.get("PK_SMTP_FROM", "").strip() or self.user
         self.sent = []   # (recipients, subject) — kept for tests and the settings page
 
     @property
@@ -140,10 +144,19 @@ class Mailer:
             server.starttls()
         try:
             if self.user:
-                server.login(self.user, self.password)
+                try:
+                    server.login(self.user, self.password)
+                except smtplib.SMTPServerDisconnected:
+                    # Gmail refuses a wrong password and hangs up before Python can try again
+                    raise smtplib.SMTPAuthenticationError(
+                        535, b"Username and Password not accepted (the mail server hung up during sign-in)")
             server.send_message(msg)
         finally:
-            server.quit()
+            # Gmail hangs up after refusing a password; closing must not hide that real reason
+            try:
+                server.quit()
+            except Exception:
+                server.close()
         self.sent.append((list(recipients), subject))
 
     def send(self, recipients, subject, body):
@@ -585,6 +598,22 @@ class Uploads:
             return f.read()
 
 
+def explain_mail_error(e):
+    """The mail server's refusal in plain words, with what to do about it."""
+    text = str(e)
+    code = getattr(e, "smtp_code", None)
+    if code == 534 or "Application-specific password" in text or "InvalidSecondFactor" in text:
+        return ("Gmail needs an app password, not the normal Gmail password. Create one at "
+                "myaccount.google.com/apppasswords and put it in PK_SMTP_PASSWORD on the server.")
+    if code == 535 or "Username and Password not accepted" in text or "BadCredentials" in text:
+        return ("Gmail didn't accept the sign-in. Check that PK_SMTP_USER is the full Gmail address and "
+                "PK_SMTP_PASSWORD is a 16-letter app password for that same account, typed without spaces.")
+    if isinstance(e, (TimeoutError, ConnectionRefusedError, OSError)) and not isinstance(e, smtplib.SMTPException):
+        return ("The server couldn't reach the mail server (%s). Check PK_SMTP_HOST (smtp.gmail.com) and "
+                "PK_SMTP_PORT (587). On Render, email only works on a paid instance — the Free plan blocks it." % text)
+    return "The mail server refused: %s" % text
+
+
 # ── SMS ───────────────────────────────────────────────────────────────────────
 class Sms:
     """Sends text messages through Africa's Talking (https://africastalking.com), set in the
@@ -738,8 +767,8 @@ class Backups:
                 "    python3 backend/server.py restore petrokenya-db-%s.zip\n" % (day, day),
                 [("petrokenya-db-%s.zip" % day, data)])
         except Exception as e:
-            self.last_email["error"] = str(e)[:200]
-            raise Error(HTTPStatus.BAD_GATEWAY, "The mail server refused: %s" % e)
+            self.last_email["error"] = explain_mail_error(e)[:300]
+            raise Error(HTTPStatus.BAD_GATEWAY, self.last_email["error"])
         self.last_email["ok"] = True
         return to
 
