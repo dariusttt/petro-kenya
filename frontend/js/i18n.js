@@ -192,7 +192,17 @@ const SW = {
   // ── Record details ──
   'Fuel Sales': 'Mauzo ya Mafuta',
   'Pump Sales Meter Cross-Check': 'Ukaguzi wa Mita ya Mauzo', 'Branches (Admin)': 'Matawi (Msimamizi)', 'New branch name': 'Jina la tawi jipya',
-  'Add Branch': 'Ongeza Tawi', 'Rename': 'Badilisha Jina', 'Branch name unchanged': 'Jina la tawi halijabadilika', 'Remove': 'Ondoa', 'Remove branch?': 'Ondoa tawi?', '— No branch yet —': '— Bado hakuna tawi —',
+  'Add Branch': 'Ongeza Tawi', 'Forgot password?': 'Umesahau nenosiri?', 'Forgot password': 'Umesahau nenosiri',
+  'Enter your username. A 6-digit code is sent to your email or phone — or, if your account has neither, to the admin, who can give it to you.':
+    'Andika jina lako la mtumiaji. Nambari ya tarakimu 6 itatumwa kwa barua pepe au simu yako — au, kama akaunti yako haina vyote viwili, kwa msimamizi, ambaye atakupa.',
+  'Send Code': 'Tuma Nambari', '6-digit code': 'Nambari ya tarakimu 6', 'New password (8+ chars, not a common one)': 'Nenosiri jipya (herufi 8+, lisilo la kawaida)',
+  'Set New Password': 'Weka Nenosiri Jipya', 'Send a new code': 'Tuma nambari mpya', '← Back to sign in': '← Rudi kuingia',
+  'Your Email & Phone': 'Barua Pepe na Simu Yako', 'Used to send you a code if you forget your password.': 'Hutumika kukutumia nambari ukisahau nenosiri lako.',
+  'Phone (for SMS)': 'Simu (kwa SMS)', 'Save Email & Phone': 'Hifadhi Barua Pepe na Simu', 'Email & phone saved': 'Barua pepe na simu zimehifadhiwa',
+  'Email (optional)': 'Barua pepe (si lazima)', 'Phone (optional)': 'Simu (si lazima)',
+  'Password changed — sign in with your new password.': 'Nenosiri limebadilishwa — ingia kwa nenosiri lako jipya.',
+  'That code is wrong or has expired — ask for a new one': 'Nambari hiyo si sahihi au imeisha muda — omba mpya',
+  'Check the phone number (e.g. 0712 345 678)': 'Kagua nambari ya simu (mfano 0712 345 678)', 'Check the email address': 'Kagua anwani ya barua pepe', 'Rename': 'Badilisha Jina', 'Branch name unchanged': 'Jina la tawi halijabadilika', 'Remove': 'Ondoa', 'Remove branch?': 'Ondoa tawi?', '— No branch yet —': '— Bado hakuna tawi —',
   'No branches yet — add the first one below.': 'Bado hakuna matawi — ongeza la kwanza hapa chini.',
   'No branches yet. Add your first branch under 👤 Account → Branches, then you can start recording.':
     'Bado hakuna matawi. Ongeza tawi lako la kwanza kwenye 👤 Akaunti → Matawi, kisha unaweza kuanza kurekodi.',
@@ -278,6 +288,8 @@ const SW_PATTERNS = [
   [/^Margin: (.+)$/, 'Kiwango cha faida: $1'],
   [/^Branch added — (.+)$/, 'Tawi limeongezwa — $1'],
   [/^Branch removed — (.+)$/, 'Tawi limeondolewa — $1'],
+  [/^If that username exists, a 6-digit code has been sent to its email or phone — or, if it has neither, to the admin\. The code works for (\d+) minutes\.(.*)$/,
+    'Kama jina hilo lipo, nambari ya tarakimu 6 imetumwa kwa barua pepe au simu yake — au, kama haina vyote viwili, kwa msimamizi. Nambari inafanya kazi kwa dakika $1.$2'],
   [/^Branch renamed — (.+) → (.+)$/, 'Jina la tawi limebadilishwa — $1 → $2'],
   [/^Last backup: (.+)\. A new one is made every night; the latest 14 are kept on the server\.$/, 'Nakala ya mwisho: $1. Mpya hufanywa kila usiku; 14 za mwisho huhifadhiwa kwenye seva.'],
   [/^Last emailed (.+) to (.+)\.$/, 'Ilitumwa mara ya mwisho $1 kwa $2.'],

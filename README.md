@@ -183,6 +183,17 @@ verification, create an *app password*, and set on the server:
 `PK_SMTP_PASSWORD=<the app password>` (keep it secret: set it as a secret on Render,
 never in the code). Then use **Send Test Email** in Alert Settings.
 
+**Forgotten passwords:** **Forgot password?** on the sign-in screen sends a 6-digit code that works
+once, for 15 minutes (5 wrong tries and it stops working). It goes to the account's own email; if it
+has none, by SMS to its phone; if it has neither, to the admins' emails, so an admin can pass it on in
+person. Everyone sets their email and phone under **👤 → Your Email & Phone**; admins can set them for
+any user (📇). The reply never says whether a username exists, and requests are limited (3 per
+account and 5 per device every 15 minutes). Every password box has a 👁 button to show what's typed.
+
+**SMS** uses [Africa's Talking](https://africastalking.com): create an account, buy SMS credit, and
+set `PK_SMS_USERNAME` and `PK_SMS_API_KEY` on the server (and `PK_SMS_SENDER` if you have an approved
+sender name). Without them, codes go by email only.
+
 **Sign-in safety**
 
 - A sign-in lasts 7 days and ends after 8 hours without use.
@@ -219,6 +230,7 @@ python3 backend/server.py reset-password mary
 | `PK_ADMIN_USER`, `PK_ADMIN_PASSWORD` | — | Admin created on first start (otherwise `admin` + random password) |
 | `PK_SECURE_COOKIE` | auto | `1` forces the Secure cookie flag (auto when behind an HTTPS proxy) |
 | `PK_SMTP_HOST`, `PK_SMTP_PORT`, `PK_SMTP_USER`, `PK_SMTP_PASSWORD`, `PK_SMTP_FROM` | — | Mail account for alert and backup emails (port 587 uses STARTTLS, 465 uses SSL) |
+| `PK_SMS_USERNAME`, `PK_SMS_API_KEY`, `PK_SMS_SENDER` | — | Africa's Talking account for password reset codes by SMS (`sandbox` as the username uses their test system) |
 | `PK_TRUST_PROXY` | off | `1` reads the visitor's address from `X-Forwarded-For`. Set it **only** behind a proxy you control (Render, Railway); never when the server faces the internet directly |
 
 ## API

@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PetroKenya">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/styles.css?v=17">
+<link rel="stylesheet" href="css/styles.css?v=18">
 </head>
 <body>
 
@@ -1027,7 +1027,7 @@
 
 <!-- ══ SIGN-IN ══ -->
 <div class="overlay login-overlay" id="loginOverlay">
-  <form class="modal login-modal" onsubmit="doLogin(event)" autocomplete="on">
+  <form class="modal login-modal" id="loginForm" onsubmit="doLogin(event)" autocomplete="on">
     <div class="logo" style="justify-content:center;margin-bottom:18px">
       <div class="logo-mark">⛽</div>
       <div class="logo-text">
@@ -1045,10 +1045,34 @@
     </div>
     <div id="loginError" class="login-error"></div>
     <button class="btn btn-g" id="loginBtn" type="submit" style="width:100%">Sign in</button>
-    <div class="m-sub" style="margin:14px 0 0;text-align:center">Ask your administrator for an account.</div>
+    <div class="lang-switch" style="margin-top:10px"><button type="button" onclick="showForgot()">Forgot password?</button></div>
+    <div class="m-sub" style="margin:10px 0 0;text-align:center">Ask your administrator for an account.</div>
     <div class="lang-switch">🌐 <button type="button" onclick="setLanguage('en')">English</button> ·
       <button type="button" onclick="setLanguage('sw')">Kiswahili</button></div>
   </form>
+
+  <!-- Forgot password: a 6-digit code by email or SMS -->
+  <div class="modal login-modal" id="forgotBox" hidden>
+    <div class="m-title">🔑 Forgot password</div>
+    <div class="m-sub">Enter your username. A 6-digit code is sent to your email or phone — or, if your
+      account has neither, to the admin, who can give it to you.</div>
+    <form id="fpStep1" onsubmit="sendResetCode(event)">
+      <div class="ig" style="margin-bottom:12px"><label for="fpUser">Username</label>
+        <input type="text" id="fpUser" autocomplete="username" autocapitalize="none" spellcheck="false" required></div>
+      <button class="btn btn-g" id="fpSendBtn" type="submit" style="width:100%">✉️ Send Code</button>
+    </form>
+    <form id="fpStep2" onsubmit="finishReset(event)" hidden>
+      <div class="info-note" id="fpSent" style="margin-bottom:12px"></div>
+      <div class="ig" style="margin-bottom:12px"><label for="fpCode">6-digit code</label>
+        <input type="text" id="fpCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required></div>
+      <div class="ig" style="margin-bottom:12px"><label for="fpNew">New password (8+ chars, not a common one)</label>
+        <input type="password" id="fpNew" autocomplete="new-password" required></div>
+      <button class="btn btn-g" id="fpResetBtn" type="submit" style="width:100%">🔑 Set New Password</button>
+      <div class="lang-switch"><button type="button" onclick="showForgotStep(1)">Send a new code</button></div>
+    </form>
+    <div id="fpError" class="login-error" style="margin-top:10px"></div>
+    <div class="lang-switch"><button type="button" onclick="backToLogin()">← Back to sign in</button></div>
+  </div>
 </div>
 
 <!-- ══ ACCOUNT & USERS ══ -->
@@ -1069,6 +1093,20 @@
         <input type="text" id="meFullName" maxlength="60" placeholder="e.g. Mary Wanjiku" autocomplete="name"></div>
       <div class="actions" style="margin-top:10px">
         <button class="btn btn-b btn-sm" onclick="saveMyName()">💾 Save Name</button>
+      </div>
+    </div>
+
+    <div class="m-sec">
+      <div class="m-sec-ttl">Your Email &amp; Phone</div>
+      <div class="m-sub" style="margin:0 0 8px">Used to send you a code if you forget your password.</div>
+      <div class="g2" style="gap:10px">
+        <div class="ig"><label for="meEmail">Email</label>
+          <input type="email" id="meEmail" maxlength="120" placeholder="e.g. mary@gmail.com" autocomplete="email"></div>
+        <div class="ig"><label for="mePhone">Phone (for SMS)</label>
+          <input type="tel" id="mePhone" maxlength="20" placeholder="e.g. 0712 345 678" autocomplete="tel"></div>
+      </div>
+      <div class="actions" style="margin-top:10px">
+        <button class="btn btn-b btn-sm" onclick="saveMyContact()">💾 Save Email &amp; Phone</button>
       </div>
     </div>
 
@@ -1114,6 +1152,10 @@
             <option value="manager">Branch Manager</option>
             <option value="admin">Admin</option>
           </select></div>
+        <div class="ig"><label for="nuEmail">Email (optional)</label>
+          <input type="email" id="nuEmail" maxlength="120" placeholder="for password resets"></div>
+        <div class="ig"><label for="nuPhone">Phone (optional)</label>
+          <input type="tel" id="nuPhone" maxlength="20" placeholder="e.g. 0712 345 678"></div>
         <div class="ig"><label for="nuStation">Branch (required for managers)</label>
           <select id="nuStation">
             <option value="">All branches</option>
@@ -1231,7 +1273,7 @@
 
 <div id="toast"></div>
 
-<script src="js/i18n.js?v=17"></script>
-<script src="js/app.js?v=17"></script>
+<script src="js/i18n.js?v=18"></script>
+<script src="js/app.js?v=18"></script>
 </body>
 </html>
