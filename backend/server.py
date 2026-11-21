@@ -30,6 +30,8 @@ API (all JSON; everything except /api/health and /api/login needs a signed-in se
     GET    /api/records/<id>/history     every saved version and what changed
     GET    /api/bin   POST /api/bin/<id>/restore   DELETE /api/bin/<id>   (admin)
     POST   /api/me/logout-all            POST /api/users/<id>/logout   (admin)
+    POST   /api/password/forgot {username}    POST /api/password/reset {username, code, new_password}
+    POST   /api/me/contact {email, phone}     PUT /api/users/<id>/contact   (admin)
     POST   /api/records/<id>/approve     (manager of the branch, admin)
     POST   /api/records/<id>/reopen      (admin)
     GET    /api/records/previous?station=&date=     latest saved day before a date
@@ -86,6 +88,9 @@ COOKIE = "pk_session"
 PBKDF2_ROUNDS = 240_000
 LOGIN_MAX_FAILS, LOGIN_WINDOW = 5, 15 * 60   # wrong passwords per device before a pause
 ACCOUNT_MAX_FAILS = 10                       # wrong passwords per account, from any device
+RESET_CODE_MINUTES = 15                      # a password reset code works this long
+RESET_CODE_TRIES = 5                         # wrong codes before it stops working
+RESET_REQUESTS_PER_IP, RESET_REQUESTS_PER_ACCOUNT = 5, 3   # code requests per 15 minutes
 STAFF_EDIT_DAYS = 1              # staff may change today's and yesterday's records only
 # Only behind a proxy we control (Render etc.) may X-Forwarded-For name the client;
 # otherwise anyone could fake it to dodge the login limits
@@ -793,6 +798,42 @@ def csv_cell(v):
 
 # ── Accounts & sessions ───────────────────────────────────────────────────────
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{3,32}$")
+EMAIL_RE = re.compile(r"^[^@\s<>\"',;]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$")
+
+
+def clean_email(value):
+    email = str(value or "").strip()
+    if email and not EMAIL_RE.match(email):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "Check the email address")
+    return email or None
+
+
+def clean_phone(value):
+    """Kenyan numbers in any usual form (0712 345 678, 254712345678, +254 712…) become +2547…;
+    other countries must start with + and their code."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    digits = re.sub(r"[\s().-]", "", raw)
+    if re.fullmatch(r"0[17]\d{8}", digits):
+        digits = "+254" + digits[1:]
+    elif re.fullmatch(r"254[17]\d{8}", digits):
+        digits = "+" + digits
+    elif re.fullmatch(r"[17]\d{8}", digits):
+        digits = "+254" + digits
+    if not re.fullmatch(r"\+[1-9]\d{7,14}", digits):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "Check the phone number (e.g. 0712 345 678)")
+    return digits
+
+
+def mask_contact(value):
+    """j•••@gmail.com / +254 7•• ••• 678 — enough to recognise, not enough to copy."""
+    if not value:
+        return ""
+    if "@" in value:
+        name, domain = value.split("@", 1)
+        return name[:1] + "•••@" + domain
+    return value[:5] + "•• ••• " + value[-3:]
 
 
 def hash_password(password, salt=None):
@@ -878,6 +919,14 @@ class Auth:
         cols = [r["name"] for r in store.conn.execute("PRAGMA table_info(users)").fetchall()]
         if "full_name" not in cols:
             store.conn.execute("ALTER TABLE users ADD COLUMN full_name TEXT")
+        for col in ("email", "phone"):                      # contact details, for password resets
+            if col not in cols:
+                store.conn.execute("ALTER TABLE users ADD COLUMN %s TEXT" % col)
+        store.conn.execute("""CREATE TABLE IF NOT EXISTS password_resets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            code_hash TEXT NOT NULL, expires_at REAL NOT NULL, tries INTEGER NOT NULL DEFAULT 0,
+            used INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)""")
+        self.reset_requests = {}   # ip or account -> [count, first_request_time]
         scols = [r["name"] for r in store.conn.execute("PRAGMA table_info(sessions)").fetchall()]
         if "last_seen" not in scols:
             store.conn.execute("ALTER TABLE sessions ADD COLUMN last_seen REAL")
@@ -888,7 +937,9 @@ class Auth:
         full_name = row["full_name"] or None
         return {"id": row["id"], "username": row["username"], "full_name": full_name,
                 "display_name": full_name or row["username"], "role": row["role"],
-                "station": row["station"] or None, "created_at": row["created_at"]}
+                "station": row["station"] or None, "created_at": row["created_at"],
+                "email": row["email"] if "email" in row.keys() else None,
+                "phone": row["phone"] if "phone" in row.keys() else None}
 
     @staticmethod
     def clean_name(full_name):
@@ -904,6 +955,75 @@ class Auth:
             self.store.conn.commit()
         return self.get(user_id)
 
+    def set_contact(self, user_id, email, phone):
+        email, phone = clean_email(email), clean_phone(phone)
+        with self.store.lock:
+            cur = self.store.conn.execute("UPDATE users SET email = ?, phone = ? WHERE id = ?", (email, phone, user_id))
+            self.store.conn.commit()
+        if not cur.rowcount:
+            raise ApiError(HTTPStatus.NOT_FOUND, "User not found")
+        return self.get(user_id)
+
+    # ── Forgotten passwords: a 6-digit code, sent by email or SMS, works once for 15 minutes ──
+    @staticmethod
+    def _code_hash(user_id, code):
+        return hashlib.sha256(("%s:%s" % (user_id, code)).encode()).hexdigest()
+
+    def start_reset(self, username, ip):
+        """Make a reset code for the account, if it exists. Returns (user_row, code) or (None, None);
+        the caller sends the code and always gives the same answer, so nobody can find out which
+        usernames exist."""
+        account = (username or "").strip().lower()
+        if self._over(self.reset_requests, "ip:" + ip, RESET_REQUESTS_PER_IP):
+            raise ApiError(HTTPStatus.TOO_MANY_REQUESTS, "Too many requests — try again in 15 minutes")
+        self.reset_requests.setdefault("ip:" + ip, [0, time.time()])[0] += 1
+        row = self.find(username)
+        if not row or self._over(self.reset_requests, "user:" + account, RESET_REQUESTS_PER_ACCOUNT):
+            return None, None
+        self.reset_requests.setdefault("user:" + account, [0, time.time()])[0] += 1
+        code = "%06d" % secrets.randbelow(1000000)
+        with self.store.lock:
+            self.store.conn.execute("UPDATE password_resets SET used = 1 WHERE user_id = ? AND used = 0", (row["id"],))
+            self.store.conn.execute(
+                "INSERT INTO password_resets (user_id, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?)",
+                (row["id"], self._code_hash(row["id"], code), time.time() + RESET_CODE_MINUTES * 60, now_iso()))
+            self.store.conn.commit()
+        return row, code
+
+    def finish_reset(self, username, code, new_password, ip):
+        wrong = ApiError(HTTPStatus.BAD_REQUEST, "That code is wrong or has expired — ask for a new one")
+        if self.throttled(ip):
+            raise ApiError(HTTPStatus.TOO_MANY_REQUESTS, "Too many failed attempts — try again in 15 minutes")
+        row = self.find(username)
+        code = re.sub(r"\s", "", str(code or ""))
+        reset = None
+        if row:
+            with self.store.lock:
+                reset = self.store.conn.execute(
+                    "SELECT * FROM password_resets WHERE user_id = ? AND used = 0 AND expires_at > ? "
+                    "ORDER BY id DESC LIMIT 1", (row["id"], time.time())).fetchone()
+        if not reset or reset["tries"] >= RESET_CODE_TRIES or \
+                not hmac.compare_digest(reset["code_hash"], self._code_hash(row["id"], code)):
+            self.fails.setdefault(ip, [0, time.time()])[0] += 1
+            if reset:
+                with self.store.lock:
+                    self.store.conn.execute("UPDATE password_resets SET tries = tries + 1 WHERE id = ?", (reset["id"],))
+                    self.store.conn.commit()
+            raise wrong
+        self.set_password(row["id"], new_password)      # checks the password rules; signs out everywhere
+        with self.store.lock:
+            self.store.conn.execute("UPDATE password_resets SET used = 1 WHERE user_id = ?", (row["id"],))
+            self.store.conn.commit()
+        self.fails.pop(ip, None)
+        self.account_fails.pop(row["username"].lower(), None)
+
+    def admin_emails(self, except_id=None):
+        with self.store.lock:
+            rows = self.store.conn.execute(
+                "SELECT email FROM users WHERE role = 'admin' AND email IS NOT NULL AND email != '' AND id != ?",
+                (except_id or -1,)).fetchall()
+        return [r["email"] for r in rows]
+
     def count(self):
         with self.store.lock:
             return self.store.conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
@@ -913,9 +1033,10 @@ class Auth:
             rows = self.store.conn.execute("SELECT * FROM users ORDER BY username").fetchall()
         return [self.public(r) for r in rows]
 
-    def create(self, username, password, role="staff", station=None, full_name=None):
+    def create(self, username, password, role="staff", station=None, full_name=None, email=None, phone=None):
         username = (username or "").strip()
         full_name = self.clean_name(full_name)
+        email, phone = clean_email(email), clean_phone(phone)
         if not USERNAME_RE.match(username):
             raise ApiError(HTTPStatus.BAD_REQUEST,
                            "Username must be 3-32 letters, numbers, dots, dashes or underscores")
@@ -930,9 +1051,9 @@ class Auth:
         try:
             with self.store.lock:
                 cur = self.store.conn.execute(
-                    "INSERT INTO users (username, pw_hash, role, station, full_name, created_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?)",
-                    (username, hash_password(password), role, station, full_name, now_iso()))
+                    "INSERT INTO users (username, pw_hash, role, station, full_name, email, phone, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (username, hash_password(password), role, station, full_name, email, phone, now_iso()))
                 self.store.conn.commit()
         except sqlite3.IntegrityError:
             raise ApiError(HTTPStatus.CONFLICT, "That username is already taken")
@@ -1228,6 +1349,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(HTTPStatus.OK, {"user": user},
                                   {"Set-Cookie": self._cookie(token, SESSION_DAYS * 86400)})
 
+            if path == "/api/password/forgot" and m == "POST":
+                return self._json(HTTPStatus.OK, self._send_reset_code(self._body().get("username")))
+            if path == "/api/password/reset" and m == "POST":
+                body = self._body()
+                self.auth.finish_reset(body.get("username"), body.get("code"), body.get("new_password"),
+                                       self._client_ip())
+                return self._json(HTTPStatus.OK, {"ok": True})
+
             if path == "/api/logout" and m == "POST":
                 self.auth.logout(self._token())
                 return self._json(HTTPStatus.OK, {"ok": True}, {"Set-Cookie": self._cookie("", 0)})
@@ -1242,6 +1371,30 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # pragma: no cover - last-resort guard
             self.log_message("Unhandled error: %r", e)
             self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Internal server error"})
+
+    def _send_reset_code(self, username):
+        """Send a reset code to the account's own email, else its phone by SMS, else to the admins
+        (who can pass it on in person). The answer never says whether the username exists."""
+        row, code = self.auth.start_reset(username, self._client_ip())
+        if row:
+            who = row["full_name"] or row["username"]
+            text = ("Your PetroKenya password reset code is %s. It works for %d minutes. "
+                    "If you didn't ask for it, ignore this message." % (code, RESET_CODE_MINUTES))
+            if row["email"] and self.mailer.configured:
+                self.mailer.send([row["email"]], "PetroKenya password reset code", text + "\n")
+            elif row["phone"] and self.sms.configured:
+                self.sms.send(row["phone"], "PetroKenya code: %s (valid %d min). Don't share it." % (code, RESET_CODE_MINUTES))
+            else:
+                admins = self.auth.admin_emails(except_id=row["id"])
+                if admins and self.mailer.configured:
+                    self.mailer.send(admins, "PetroKenya: password reset for %s" % who,
+                                     "%s (username %s) asked to reset their password.\n\nTheir code is %s and works "
+                                     "for %d minutes. Give it to them only if you know they asked — in person or by "
+                                     "phone, not by forwarding this email.\n" % (who, row["username"], code, RESET_CODE_MINUTES))
+                else:
+                    sys.stderr.write("Password reset for %s could not be sent: no email or SMS set up\n" % row["username"])
+        return {"ok": True, "message": "If that username exists, a 6-digit code has been sent to its email or phone "
+                                      "— or, if it has neither, to the admin. The code works for %d minutes." % RESET_CODE_MINUTES}
 
     def _route(self, m, path, q, user):
         if path == "/api/me" and m == "GET":
@@ -1258,6 +1411,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/me/logout-all" and m == "POST":
             ended = self.auth.logout_everywhere(user["id"], keep_token=self._token())
             return self._json(HTTPStatus.OK, {"signed_out": ended})
+        if path == "/api/me/contact" and m == "POST":
+            body = self._body()
+            return self._json(HTTPStatus.OK, {"user": self.auth.set_contact(user["id"], body.get("email"), body.get("phone"))})
         if path == "/api/me/name" and m == "POST":
             updated = self.auth.set_full_name(user["id"], self._body().get("full_name"))
             return self._json(HTTPStatus.OK, {"user": updated})
@@ -1568,13 +1724,16 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._body()
                 created = self.auth.create(body.get("username"), body.get("password"),
                                            body.get("role") or "staff", body.get("station"),
-                                           body.get("full_name"))
+                                           body.get("full_name"), body.get("email"), body.get("phone"))
                 return self._json(HTTPStatus.CREATED, {"user": created})
 
-        mm = re.fullmatch(r"/api/users/(\d+)(/password|/logout)?", path)
+        mm = re.fullmatch(r"/api/users/(\d+)(/password|/logout|/contact)?", path)
         if mm:
             self._require_admin(user)
             uid = int(mm.group(1))
+            if mm.group(2) == "/contact" and m == "PUT":
+                body = self._body()
+                return self._json(HTTPStatus.OK, {"user": self.auth.set_contact(uid, body.get("email"), body.get("phone"))})
             if mm.group(2) == "/password" and m == "POST":
                 self.auth.set_password(uid, self._body().get("password"))
                 return self._json(HTTPStatus.OK, {"ok": True})
@@ -1650,7 +1809,7 @@ def make_server(host=HOST, port=PORT, db_path=DB_PATH, bootstrap=True):
     handler = type("BoundHandler", (Handler,), {
         "store": store, "auth": auth, "settings": settings, "mailer": mailer,
         "alerts": business.Alerts(store, settings, mailer), "credit": business.Credit(store),
-        "uploads": business.Uploads(store, uploads_dir),
+        "uploads": business.Uploads(store, uploads_dir), "sms": business.Sms(),
         "backups": business.Backups(store, settings, mailer, uploads_dir, backups_dir)})
     return ThreadingHTTPServer((host, port), handler)
 

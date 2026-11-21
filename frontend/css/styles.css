@@ -381,3 +381,11 @@ body.no-profit .pbox-4 .pbox-item+.pbox-item{border-left:1px solid var(--brd);bo
   font-family:var(--mono);font-size:.72rem}
 .pump-name{color:var(--txt,#e8e8e8);font-weight:600;letter-spacing:.5px}
 .pump-sold{color:var(--acc)}
+
+/* 👁 show / hide a password */
+.pw-wrap{position:relative;display:block}
+.pw-wrap input{width:100%;padding-right:46px;box-sizing:border-box}
+.pw-eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;
+  font-size:1.05rem;line-height:1;padding:8px;opacity:.7;border-radius:6px}
+.pw-eye:hover,.pw-eye:focus-visible{opacity:1;background:rgba(255,255,255,.06)}
+.login-error.ok{color:var(--acc)}

@@ -94,7 +94,8 @@
 
   // ── Users and sessions ──────────────────────────────────────────────────────
   const publicUser = u => ({ id: u.id, username: u.username, full_name: u.full_name || null,
-    display_name: u.full_name || u.username, role: u.role, station: u.station || null, created_at: u.created_at });
+    display_name: u.full_name || u.username, role: u.role, station: u.station || null, created_at: u.created_at,
+    email: u.email || null, phone: u.phone || null });
   const COMMON = ['password', 'password1', 'password123', '12345678', '123456789', 'qwerty123', 'admin123', 'kenya123', 'safaricom'];
   function checkPassword(pw, username) {
     if (typeof pw !== 'string' || pw.length < 8) fail(400, 'Password must be at least 8 characters');
@@ -394,12 +395,33 @@
       return { user: publicUser(u) };
     }
     if (path === '/api/logout') { setSession(null); return { ok: true }; }
+    // Forgotten password: the preview can't send email or SMS, so it shows the code on screen
+    if (path === '/api/password/forgot' && method === 'POST') {
+      const u = db.users.find(x => x.username.toLowerCase() === String(body.username || '').trim().toLowerCase());
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      if (u) { db.resets = db.resets || {}; db.resets[u.id] = { code, until: Date.now() + 15 * 60e3, tries: 0 }; }
+      return { ok: true, message: 'If that username exists, a 6-digit code has been sent to its email or phone — or, if it has neither, to the admin. The code works for 15 minutes.',
+        preview_code: u ? code : undefined };
+    }
+    if (path === '/api/password/reset' && method === 'POST') {
+      const u = db.users.find(x => x.username.toLowerCase() === String(body.username || '').trim().toLowerCase());
+      const r = u && (db.resets || {})[u.id];
+      if (!r || r.until < Date.now() || r.tries >= 5 || r.code !== String(body.code || '').trim()) {
+        if (r) r.tries++;
+        fail(400, 'That code is wrong or has expired — ask for a new one');
+      }
+      const pw = String(body.new_password || '');
+      if (pw.length < 8) fail(400, 'Password must be at least 8 characters');
+      u.password = pw; delete db.resets[u.id];
+      return { ok: true };
+    }
     const user = currentUser(db);
     if (!user) fail(401, 'Please sign in');
     const pu = publicUser(user);
     let m;
 
     if (path === '/api/me') return { user: pu };
+    if (path === '/api/me/contact') { user.email = String(body.email || '').trim() || null; user.phone = String(body.phone || '').trim() || null; return { user: publicUser(user) }; }
     if (path === '/api/me/name') { user.full_name = String(body.full_name || '').trim().slice(0, 60) || null; return { user: publicUser(user) }; }
     if (path === '/api/me/password') {
       if (body.current_password !== user.password) fail(400, 'Current password is wrong');
@@ -612,8 +634,16 @@
       const role = body.role || 'staff', station = body.station || null;
       if (role === 'manager' && !station) fail(400, 'A branch manager needs a branch');
       checkPassword(body.password, username);
-      const u = { id: nextId(db, 'user'), username, password: body.password, role, station, full_name: body.full_name || null, created_at: nowIso() };
+      const u = { id: nextId(db, 'user'), username, password: body.password, role, station, full_name: body.full_name || null,
+        email: String(body.email || '').trim() || null, phone: String(body.phone || '').trim() || null, created_at: nowIso() };
       db.users.push(u);
+      return { user: publicUser(u) };
+    }
+    if ((m = path.match(/^\/api\/users\/(\d+)\/contact$/)) && method === 'PUT') {
+      requireAdmin(pu);
+      const u = db.users.find(x => x.id === Number(m[1]));
+      if (!u) fail(404, 'User not found');
+      u.email = String(body.email || '').trim() || null; u.phone = String(body.phone || '').trim() || null;
       return { user: publicUser(u) };
     }
     if ((m = path.match(/^\/api\/users\/(\d+)(\/password|\/logout)?$/))) {

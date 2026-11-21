@@ -165,8 +165,89 @@ function requireOnline(action) {
 }
 
 // ── Sign in / account ─────────────────────────────────────────────────────────
+// ── 👁 Show / hide password: every password box gets an eye button ───────────
+function addPasswordEyes(root) {
+  (root || document).querySelectorAll('input[type="password"]').forEach(input => {
+    if (input.parentElement.classList.contains('pw-wrap')) return;
+    const wrap = document.createElement('span');
+    wrap.className = 'pw-wrap';
+    input.parentNode.insertBefore(wrap, input);
+    wrap.appendChild(input);
+    const eye = document.createElement('button');
+    eye.type = 'button';
+    eye.className = 'pw-eye';
+    eye.textContent = '👁';
+    eye.title = eye.ariaLabel = 'Show password';
+    eye.onclick = () => {
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      eye.textContent = show ? '🙈' : '👁';
+      eye.title = eye.ariaLabel = show ? 'Hide password' : 'Show password';
+      input.focus();
+    };
+    wrap.appendChild(eye);
+  });
+}
+// Typed passwords go back to dots once they've been used
+function hidePasswords() {
+  document.querySelectorAll('.pw-wrap input').forEach(i => { i.type = 'password'; });
+  document.querySelectorAll('.pw-eye').forEach(e => { e.textContent = '👁'; e.title = e.ariaLabel = 'Show password'; });
+}
+addPasswordEyes();
+
+// ── Forgot password: ask for a code, then set a new password with it ─────────
+function showForgot() {
+  $('loginForm').hidden = true;
+  $('forgotBox').hidden = false;
+  $('fpUser').value = sv('loginUser');
+  showForgotStep(1);
+}
+function showForgotStep(n) {
+  $('fpStep1').hidden = n !== 1;
+  $('fpStep2').hidden = n !== 2;
+  $('fpError').textContent = '';
+  setTimeout(() => $(n === 1 ? 'fpUser' : 'fpCode').focus(), 50);
+}
+function backToLogin(msg) {
+  $('forgotBox').hidden = true;
+  $('loginForm').hidden = false;
+  $('loginError').textContent = msg || '';
+  $('loginError').classList.toggle('ok', !!msg);
+  ['fpCode', 'fpNew'].forEach(id => { $(id).value = ''; });
+  hidePasswords();
+  setTimeout(() => $(sv('loginUser') ? 'loginPass' : 'loginUser').focus(), 50);
+}
+async function sendResetCode(evt) {
+  if (evt) evt.preventDefault();
+  if (!requireOnline('reset a password')) return;
+  const btn = $('fpSendBtn');
+  btn.disabled = true;
+  try {
+    const res = await api('POST', '/password/forgot', { username: sv('fpUser') });
+    $('fpSent').textContent = '✉️ ' + res.message + (res.preview_code ? ' (Website preview — your code is ' + res.preview_code + ')' : '');
+    showForgotStep(2);
+  } catch (e) { $('fpError').textContent = e.message; }
+  finally { btn.disabled = false; }
+}
+async function finishReset(evt) {
+  if (evt) evt.preventDefault();
+  const btn = $('fpResetBtn');
+  btn.disabled = true;
+  $('fpError').textContent = '';
+  try {
+    await api('POST', '/password/reset', { username: sv('fpUser'), code: sv('fpCode'), new_password: $('fpNew').value });
+    $('loginUser').value = sv('fpUser');
+    $('loginPass').value = '';
+    backToLogin('✅ Password changed — sign in with your new password.');
+  } catch (e) { $('fpError').textContent = e.message; }
+  finally { btn.disabled = false; }
+}
+
 function showLogin(msg) {
   $('loginError').textContent = msg || '';
+  $('loginError').classList.remove('ok');
+  $('forgotBox').hidden = true;
+  $('loginForm').hidden = false;
   $('loginOverlay').classList.add('open');
   setTimeout(() => $('loginUser').focus(), 50);
 }
@@ -181,6 +262,7 @@ async function doLogin(evt) {
     USER = res.user;
     storeSet('pk_user', USER);
     $('loginPass').value = '';
+    hidePasswords();
     $('loginOverlay').classList.remove('open');
     await startSession();
     toast('👋 Welcome, ' + displayName(USER));
@@ -473,6 +555,8 @@ function openAccount() {
   if (!USER) { showLogin(); return; }
   $('acctName').textContent = displayName(USER);
   $('meFullName').value = USER.full_name || '';
+  $('meEmail').value = USER.email || '';
+  $('mePhone').value = USER.phone || '';
   $('acctRole').textContent = USER.role === 'admin' ? 'Administrator — all branches'
     : USER.role === 'manager' ? 'Branch Manager — ' + USER.station
     : 'Staff — ' + (USER.station || 'all branches');
@@ -488,6 +572,18 @@ function openAccount() {
   $('accountOverlay').classList.add('open');
 }
 function closeAccount() { $('accountOverlay').classList.remove('open'); }
+
+async function saveMyContact() {
+  if (!requireOnline('save your email and phone')) return;
+  try {
+    USER = (await api('POST', '/me/contact', { email: sv('meEmail'), phone: sv('mePhone') })).user;
+    storeSet('pk_user', USER);
+    $('meEmail').value = USER.email || '';
+    $('mePhone').value = USER.phone || '';
+    if (USER.role === 'admin') loadUsers();
+    toast('✅ Email & phone saved');
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
 
 async function saveMyName() {
   if (!requireOnline('change your name')) return;
@@ -505,6 +601,7 @@ async function changePassword() {
   try {
     await api('POST', '/me/password', { current_password: $('pwCurrent').value, new_password: $('pwNew').value });
     ['pwCurrent','pwNew'].forEach(id => $(id).value = '');
+    hidePasswords();
     toast('🔑 Password changed');
   } catch (e) { toast('⚠️ ' + e.message, true); }
 }
@@ -611,22 +708,49 @@ async function removeStation(name) {
   } catch (e) { toast('⚠️ ' + e.message, true); }
 }
 
+let USERS = [], EDITING_CONTACT = null;
+
 async function loadUsers() {
-  const list = $('usersList');
   try {
-    const { users } = await api('GET', '/users');
-    list.innerHTML = users.map(u => `
+    USERS = (await api('GET', '/users')).users;
+    renderUsers();
+  } catch (e) {
+    $('usersList').innerHTML = `<div class="m-row"><span style="color:var(--red)">${esc(e.message)}</span></div>`;
+  }
+}
+
+function renderUsers() {
+  const list = $('usersList');
+  {
+    const users = USERS;
+    list.innerHTML = users.map(u => u.id === EDITING_CONTACT ? `
+      <div class="m-row" style="flex-wrap:wrap;gap:8px">
+        <span style="width:100%" translate="no">${esc(displayName(u))} — email &amp; phone for password resets</span>
+        <input type="email" id="ucEmail" value="${esc(u.email || '')}" placeholder="Email" style="flex:1;min-width:150px">
+        <input type="tel" id="ucPhone" value="${esc(u.phone || '')}" placeholder="Phone, e.g. 0712 345 678" style="flex:1;min-width:150px">
+        <span style="display:flex;gap:6px"><button class="btn btn-g btn-sm" onclick="saveUserContact(${u.id})">Save</button>
+        <button class="btn btn-o btn-sm" onclick="EDITING_CONTACT=null;renderUsers()">Cancel</button></span>
+      </div>` : `
       <div class="m-row" style="align-items:center;gap:8px">
-        <span translate="no">${esc(displayName(u))} <small style="color:var(--mut)">· ${u.full_name ? esc(u.username) + ' · ' : ''}${esc(u.role)}${u.station ? ' · ' + esc(u.station) : ''}</small></span>
+        <span translate="no">${esc(displayName(u))} <small style="color:var(--mut)">· ${u.full_name ? esc(u.username) + ' · ' : ''}${esc(u.role)}${u.station ? ' · ' + esc(u.station) : ''}${u.email ? ' · ✉️' : ''}${u.phone ? ' · 📱' : ''}</small></span>
         <span style="display:flex;gap:6px">
+          <button class="btn btn-o btn-xs" title="Email &amp; phone for password resets" onclick="EDITING_CONTACT=${u.id};renderUsers()">📇</button>
           <button class="btn btn-o btn-xs" title="Reset password" onclick="resetUserPassword(${u.id}, '${esc(u.username)}')">🔑</button>
           ${u.id === USER.id ? '' : `<button class="btn btn-o btn-xs" title="Sign out on every device" onclick="signOutUser(${u.id}, '${esc(u.username)}')">⎋</button>`}
           ${u.id === USER.id ? '' : `<button class="btn btn-r btn-xs" onclick="deleteUser(${u.id}, '${esc(u.username)}')">✕</button>`}
         </span>
       </div>`).join('');
-  } catch (e) {
-    list.innerHTML = `<div class="m-row"><span style="color:var(--red)">${esc(e.message)}</span></div>`;
   }
+}
+
+async function saveUserContact(id) {
+  if (!requireOnline('save contact details')) return;
+  try {
+    await api('PUT', '/users/' + id + '/contact', { email: sv('ucEmail'), phone: sv('ucPhone') });
+    EDITING_CONTACT = null;
+    toast('✅ Email & phone saved');
+    loadUsers();
+  } catch (e) { toast('⚠️ ' + e.message, true); }
 }
 
 async function addUser() {
@@ -634,10 +758,11 @@ async function addUser() {
   try {
     await api('POST', '/users', {
       username: sv('nuName'), password: $('nuPass').value, full_name: sv('nuFullName'),
-      role: sv('nuRole'), station: sv('nuStation')
+      role: sv('nuRole'), station: sv('nuStation'), email: sv('nuEmail'), phone: sv('nuPhone')
     });
     toast('✅ User ' + sv('nuName') + ' added');
-    ['nuName','nuPass','nuFullName'].forEach(id => $(id).value = '');
+    ['nuName','nuPass','nuFullName','nuEmail','nuPhone'].forEach(id => $(id).value = '');
+    hidePasswords();
     loadUsers();
   } catch (e) { toast('⚠️ ' + e.message, true); }
 }

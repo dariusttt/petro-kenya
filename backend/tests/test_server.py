@@ -925,3 +925,104 @@ class RenameStationTest(ServerCase):
         store.conn.execute("DELETE FROM users WHERE username = 'olduser'")
         store.conn.execute("DELETE FROM stations WHERE name = 'new name branch'")
         store.conn.commit()
+
+
+class FakeSms:
+    configured = True
+
+    def __init__(self):
+        self.sent = []
+
+    def send(self, phone, message):
+        self.sent.append((phone, message))
+        return True
+
+
+class PasswordResetTest(ServerCase):
+    """Forgotten passwords: a code by email, SMS or via the admin; one use, 15 minutes, 5 tries."""
+
+    def setUp(self):
+        super().setUp()
+        h = self.httpd.RequestHandlerClass
+        self.real = (h.mailer, h.sms)
+        h.mailer, h.sms = FakeMailer(), FakeSms()
+        h.auth.reset_requests.clear()
+        h.store.conn.execute("DELETE FROM password_resets")
+        h.store.conn.execute("UPDATE users SET email = NULL, phone = NULL")
+        h.store.conn.commit()
+
+    def tearDown(self):
+        h = self.httpd.RequestHandlerClass
+        h.mailer, h.sms = self.real
+        h.auth.set_password(h.auth.find("kisumu")["id"], PASSWORD)
+
+    def code_from(self, text):
+        import re
+        return re.search(r"\b(\d{6})\b", text).group(1)
+
+    def forgot(self, username):
+        return Client(self.base).req("POST", "/api/password/forgot", {"username": username})
+
+    def reset(self, username, code, password="Fresh-Pass-2026"):
+        return Client(self.base).req("POST", "/api/password/reset",
+                                     {"username": username, "code": code, "new_password": password})
+
+    def test_contact_details_are_checked_and_cleaned(self):
+        staff = Client(self.base).login("kisumu")
+        self.assertEqual(staff.req("POST", "/api/me/contact", {"phone": "12"})[0], 400)
+        self.assertEqual(staff.req("POST", "/api/me/contact", {"email": "nope"})[0], 400)
+        res = staff.req("POST", "/api/me/contact", {"phone": "0712 345 678", "email": ""})[1]["user"]
+        self.assertEqual((res["phone"], res["email"]), ("+254712345678", None))
+        uid = res["id"]
+        self.assertEqual(staff.req("PUT", "/api/users/%d/contact" % uid, {"phone": ""})[0], 403)
+        res = self.admin.req("PUT", "/api/users/%d/contact" % uid, {"email": "k@example.com", "phone": "254112345678"})
+        self.assertEqual((res[1]["user"]["email"], res[1]["user"]["phone"]), ("k@example.com", "+254112345678"))
+
+    def test_code_by_sms_resets_the_password_once(self):
+        h = self.httpd.RequestHandlerClass
+        staff = Client(self.base).login("kisumu")
+        staff.req("POST", "/api/me/contact", {"phone": "0712345678"})
+        unknown = self.forgot("nobody-here")
+        status, res, _ = self.forgot("kisumu")
+        self.assertEqual(status, 200)
+        self.assertEqual(unknown[1], res)                          # same answer: usernames stay private
+        phone, text = h.sms.sent[-1]
+        self.assertEqual(phone, "+254712345678")
+        code = self.code_from(text)
+        self.assertEqual(self.reset("kisumu", "000000" if code != "000000" else "111111")[0], 400)
+        self.assertEqual(self.reset("kisumu", code, "short")[0], 400)         # password rules still apply
+        self.assertEqual(self.reset("kisumu", code)[0], 200)
+        self.assertEqual(staff.req("GET", "/api/me")[0], 401)                 # old sign-ins ended
+        Client(self.base).login("kisumu", "Fresh-Pass-2026")
+        self.assertEqual(self.reset("kisumu", code, "Another-Pass-2026")[0], 400)   # works only once
+
+    def test_email_comes_first_and_admins_get_it_when_the_user_has_no_contact(self):
+        h = self.httpd.RequestHandlerClass
+        Client(self.base).login("kisumu").req("POST", "/api/me/contact", {"email": "k@example.com", "phone": "0712345678"})
+        self.forgot("kisumu")
+        self.assertEqual(h.mailer.sent[-1][0], ["k@example.com"])
+        self.assertEqual(h.sms.sent, [])
+        self.admin.req("POST", "/api/me/contact", {"email": "boss@example.com"})
+        self.forgot("roamer")                                      # no email or phone of its own
+        to, subject, body = h.mailer.sent[-1]
+        self.assertEqual(to, ["boss@example.com"])
+        self.assertIn("roamer", subject + body)
+        self.assertEqual(self.reset("roamer", self.code_from(body))[0], 200)
+        h.auth.set_password(h.auth.find("roamer")["id"], PASSWORD)
+
+    def test_codes_stop_after_five_wrong_tries_and_requests_are_limited(self):
+        h = self.httpd.RequestHandlerClass
+        Client(self.base).login("kisumu").req("POST", "/api/me/contact", {"phone": "0712345678"})
+        self.forgot("kisumu")
+        code = self.code_from(h.sms.sent[-1][1])
+        wrong = "%06d" % ((int(code) + 1) % 1000000)
+        for _ in range(4):
+            self.assertEqual(self.reset("kisumu", wrong)[0], 400)
+        h.auth.fails.clear()                                      # (a different phone keeps trying)
+        self.assertEqual(self.reset("kisumu", wrong)[0], 400)
+        self.assertEqual(self.reset("kisumu", code)[0], 400)      # five wrong tries: the code is dead
+        self.forgot("kisumu"); self.forgot("kisumu")
+        self.assertEqual(len(h.sms.sent), 3)                      # three codes per account per 15 minutes
+        self.assertEqual(self.forgot("kisumu")[0], 200)
+        self.assertEqual(len(h.sms.sent), 3)
+        self.forgot("x1"); self.assertEqual(self.forgot("x2")[0], 429)     # five requests per device

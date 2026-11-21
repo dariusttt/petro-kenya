@@ -16,6 +16,8 @@ import sqlite3
 import tempfile
 import threading
 import time
+import urllib.parse
+import urllib.request
 import zipfile
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
@@ -581,6 +583,53 @@ class Uploads:
     def read(self, uid):
         with open(os.path.join(self.folder, uid), "rb") as f:
             return f.read()
+
+
+# ── SMS ───────────────────────────────────────────────────────────────────────
+class Sms:
+    """Sends text messages through Africa's Talking (https://africastalking.com), set in the
+    environment: PK_SMS_USERNAME, PK_SMS_API_KEY and optionally PK_SMS_SENDER (an approved
+    sender name). The username "sandbox" uses their free test system."""
+
+    def __init__(self):
+        self.username = os.environ.get("PK_SMS_USERNAME", "")
+        self.api_key = os.environ.get("PK_SMS_API_KEY", "")
+        self.sender = os.environ.get("PK_SMS_SENDER", "")
+        self.url = os.environ.get("PK_SMS_URL") or (
+            "https://api.sandbox.africastalking.com/version1/messaging" if self.username == "sandbox"
+            else "https://api.africastalking.com/version1/messaging")
+        self.sent = []   # phone numbers, kept for tests
+
+    @property
+    def configured(self):
+        return bool(self.username and self.api_key)
+
+    def send_now(self, phone, message):
+        form = {"username": self.username, "to": phone, "message": message}
+        if self.sender:
+            form["from"] = self.sender
+        req = urllib.request.Request(self.url, data=urllib.parse.urlencode(form).encode(), method="POST", headers={
+            "apiKey": self.api_key, "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read() or b"{}")
+        recipients = (data.get("SMSMessageData") or {}).get("Recipients") or []
+        if not recipients or recipients[0].get("status") != "Success":
+            raise RuntimeError((data.get("SMSMessageData") or {}).get("Message") or "SMS not accepted")
+        self.sent.append(phone)
+
+    def send(self, phone, message):
+        """Send in the background; failures are logged, never shown to the person asking."""
+        if not self.configured or not phone:
+            return False
+
+        def run():
+            try:
+                self.send_now(phone, message)
+            except Exception as e:  # pragma: no cover - depends on the SMS service
+                sys.stderr.write("SMS failed: %r\n" % e)
+        threading.Thread(target=run, daemon=True).start()
+        return True
 
 
 # ── Backups ───────────────────────────────────────────────────────────────────
