@@ -1026,3 +1026,58 @@ class PasswordResetTest(ServerCase):
         self.assertEqual(self.forgot("kisumu")[0], 200)
         self.assertEqual(len(h.sms.sent), 3)
         self.forgot("x1"); self.assertEqual(self.forgot("x2")[0], 429)     # five requests per device
+
+
+class MailErrorTest(unittest.TestCase):
+    """A refused Gmail sign-in is reported as such, not as a confusing follow-on error."""
+
+    def test_refused_sign_in_is_explained(self):
+        import socketserver
+        import smtplib
+        import business
+
+        class Refuse(socketserver.StreamRequestHandler):
+            def handle(self):
+                w = lambda s: self.wfile.write((s + "\r\n").encode())
+                w("220 fake ESMTP")
+                while True:
+                    line = self.rfile.readline().decode().strip()
+                    if not line:
+                        return
+                    cmd = line.split()[0].upper()
+                    if cmd in ("EHLO", "HELO"):
+                        w("250-fake\r\n250 AUTH LOGIN PLAIN")
+                    elif cmd == "AUTH":                     # like Gmail: refuse, then hang up
+                        w("535 5.7.8 Username and Password not accepted. BadCredentials")
+                        return
+                    else:
+                        w("250 OK")
+
+        srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Refuse)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        env = {"PK_SMTP_HOST": " smtp.gmail.com\n", "PK_SMTP_PORT": str(srv.server_address[1]),
+               "PK_SMTP_USER": " me@gmail.com ", "PK_SMTP_PASSWORD": "abcd efgh ijkl mnop\n"}
+        old = {k: os.environ.get(k) for k in env}
+        real_starttls, real_init = smtplib.SMTP.starttls, smtplib.SMTP.__init__
+        try:
+            os.environ.update(env)
+            mailer = business.Mailer()
+            self.assertEqual((mailer.host, mailer.user, mailer.password),
+                             ("smtp.gmail.com", "me@gmail.com", "abcdefghijklmnop"))
+            mailer.host = "127.0.0.1"                              # talk to the stand-in instead
+            smtplib.SMTP.starttls = lambda self, **k: (220, b"ok")  # (it has no TLS)
+            with self.assertRaises(smtplib.SMTPAuthenticationError) as caught:
+                mailer.send_now(["x@example.com"], "s", "b")
+            self.assertIn("Gmail didn't accept the sign-in", business.explain_mail_error(caught.exception))
+            self.assertIn("app password", business.explain_mail_error(
+                smtplib.SMTPAuthenticationError(534, b"5.7.9 Application-specific password required")))
+            self.assertIn("Free plan", business.explain_mail_error(TimeoutError("timed out")))
+        finally:
+            smtplib.SMTP.starttls, smtplib.SMTP.__init__ = real_starttls, real_init
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            srv.shutdown()
+            srv.server_close()

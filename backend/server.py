@@ -1669,7 +1669,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self.mailer.send_now(to, "PetroKenya test alert", "Alert emails from PetroKenya are working.\n")
             except Exception as e:
-                raise ApiError(HTTPStatus.BAD_GATEWAY, "The mail server refused: %s" % e)
+                raise ApiError(HTTPStatus.BAD_GATEWAY, business.explain_mail_error(e))
             return self._json(HTTPStatus.OK, {"sent_to": to})
 
         # ── Backups (admin): list, make one now, email one now, download ──
