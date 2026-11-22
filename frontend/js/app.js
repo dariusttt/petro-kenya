@@ -562,7 +562,7 @@ function openAccount() {
     : 'Staff — ' + (USER.station || 'all branches');
   $('usersSec').style.display = USER.role === 'admin' ? 'block' : 'none';
   $('stationsSec').hidden = USER.role !== 'admin';
-  if (USER.role === 'admin') renderStationsAdmin();
+  if (USER.role === 'admin') { MP_EDITING = null; renderStationsAdmin(); loadMpesaStatus(); }
   ['pwCurrent','pwNew'].forEach(id => $(id).value = '');
   if (USER.role === 'admin') loadUsers();
   $('alertSettingsSec').hidden = USER.role !== 'admin';
@@ -606,6 +606,119 @@ async function changePassword() {
   } catch (e) { toast('⚠️ ' + e.message, true); }
 }
 
+// ── M-Pesa: payments Safaricom reported for the branch and day on screen ──────
+let MP_DAY = null;   // { station, date, payments, count, total }
+
+async function loadMpesaPayments() {
+  const station = sv('fStation'), date = sv('fDate');
+  if (!USER || !station || !date || !ONLINE) { MP_DAY = null; renderMpesaReceived(); return; }
+  try {
+    const res = await api('GET', '/mpesa/payments?station=' + encodeURIComponent(station) + '&date=' + date);
+    if (sv('fStation') !== station || sv('fDate') !== date) return;       // moved on meanwhile
+    MP_DAY = { station, date, ...res };
+    // A new day with nothing typed yet starts from Safaricom's figures
+    if (res.count && !$('fMpesa').value && !$('fMpesa').readOnly && !lockReason(date)) {
+      $('fMpesa').value = res.total;
+      if (!$('fMpesaTxn').value) $('fMpesaTxn').value = res.count;
+      if (!$('fMpesaRef').value) $('fMpesaRef').value = res.payments[res.payments.length - 1].trans_id;
+      if (!$('fMpesaTill').value) $('fMpesaTill').value = res.payments[0].shortcode || '';
+      calc();
+    }
+  } catch (e) { MP_DAY = null; }
+  renderMpesaReceived();
+}
+
+function renderMpesaReceived() {
+  const box = $('mpReceived');
+  if (!MP_DAY || !MP_DAY.count) { box.hidden = true; return; }
+  const typed = fv('fMpesa'), diff = r2(typed - MP_DAY.total);
+  const match = Math.abs(diff) < 1
+    ? '<span style="color:var(--acc)">✅ Matches the amount above</span>'
+    : `<span style="color:var(--red)">⚠️ The amount above is KES ${fmt(Math.abs(diff))} ${diff > 0 ? 'more' : 'less'}</span>`;
+  const time = p => (p.paid_at || '').slice(11, 16);
+  box.hidden = false;
+  box.innerHTML = `<div class="mp-head">
+      <span>📲 Safaricom reported <b>${MP_DAY.count}</b> payment${MP_DAY.count === 1 ? '' : 's'}:</span>
+      <span class="mp-total">KES ${fmt(MP_DAY.total)}</span>${match}
+      ${Math.abs(diff) >= 1 && !lockReason(MP_DAY.date) ? '<button class="btn btn-o btn-xs" onclick="useMpesaTotal()">Use this total</button>' : ''}
+    </div>
+    <details><summary>Show each payment</summary>
+      ${MP_DAY.payments.slice().reverse().map(p => `<div class="m-row"><span translate="no">${esc(time(p))} · ${esc(p.name || 'Customer')} · ${esc(p.trans_id)}</span>
+        <span>KES ${fmt(p.amount)}</span></div>`).join('')}
+    </details>`;
+}
+
+function useMpesaTotal() {
+  if (!MP_DAY) return;
+  $('fMpesa').value = MP_DAY.total;
+  $('fMpesaTxn').value = MP_DAY.count;
+  calc();
+  renderMpesaReceived();
+}
+$('fMpesa').addEventListener('input', renderMpesaReceived);
+
+// Account → Branches: each branch's till or paybill number, and connecting it to Safaricom
+let MP_STATUS = null, MP_EDITING = null;
+
+async function loadMpesaStatus() {
+  try { MP_STATUS = await api('GET', '/mpesa/status'); } catch (e) { MP_STATUS = null; }
+  $('mpStatus').innerHTML = !MP_STATUS ? ''
+    : MP_STATUS.configured
+      ? `📲 M-Pesa is connected to Safaricom's <b>${MP_STATUS.env === 'production' ? 'live' : 'test (sandbox)'}</b> system.`
+      : '📲 M-Pesa isn\'t set up on the server yet (PK_MPESA_CONSUMER_KEY and PK_MPESA_CONSUMER_SECRET — see README).';
+  renderStationsAdmin();
+}
+
+const tillOf = name => (MP_STATUS && MP_STATUS.branches.find(b => b.station === name)) || null;
+
+function tillLabel(name) {
+  const t = tillOf(name);
+  if (!t || !t.shortcode) return '';
+  return ` <small style="color:var(--mut)">· 📲 ${t.type === 'paybill' ? 'Paybill' : 'Till'} ${esc(t.shortcode)}
+    ${t.registered_at ? '✅' : '<span style="color:var(--acc2)">(not connected yet)</span>'}</small>`;
+}
+
+function tillEditor(name) {
+  const t = tillOf(name) || {};
+  return `<div class="m-row" style="flex-wrap:wrap;gap:8px">
+      <span style="width:100%" translate="no">📲 ${esc(name)} — M-Pesa number</span>
+      <input type="text" id="mpCode" inputmode="numeric" maxlength="7" value="${esc(t.shortcode || '')}" placeholder="Till or paybill number" style="flex:1;min-width:140px">
+      <select id="mpType" style="min-width:110px"><option value="till"${t.type !== 'paybill' ? ' selected' : ''}>Till (Buy Goods)</option>
+        <option value="paybill"${t.type === 'paybill' ? ' selected' : ''}>Paybill</option></select>
+      <span style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-g btn-sm" onclick="saveTill()">Save</button>
+        ${t.shortcode && MP_STATUS && MP_STATUS.configured ? '<button class="btn btn-b btn-sm" onclick="connectTill()">🔗 Connect to Safaricom</button>' : ''}
+        ${t.shortcode && MP_STATUS && MP_STATUS.configured && MP_STATUS.env === 'sandbox' ? '<button class="btn btn-o btn-sm" onclick="testPayment()">🧪 Test payment</button>' : ''}
+        <button class="btn btn-o btn-sm" onclick="MP_EDITING=null;renderStationsAdmin()">Close</button>
+      </span></div>`;
+}
+
+async function saveTill() {
+  if (!requireOnline('save the M-Pesa number')) return;
+  try {
+    await api('PUT', '/stations/' + encodeURIComponent(MP_EDITING) + '/mpesa', { shortcode: sv('mpCode'), type: sv('mpType') });
+    toast('✅ M-Pesa number saved — now tap Connect to Safaricom');
+    await loadMpesaStatus();
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+async function connectTill() {
+  if (!requireOnline('connect to Safaricom')) return;
+  try {
+    await api('POST', '/stations/' + encodeURIComponent(MP_EDITING) + '/mpesa/register', {});
+    toast('✅ Connected — Safaricom will now report every payment to this number');
+    await loadMpesaStatus();
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+async function testPayment() {
+  if (!requireOnline('send a test payment')) return;
+  try {
+    await api('POST', '/mpesa/simulate', { station: MP_EDITING, amount: 10 });
+    toast('🧪 Test payment of KES 10 sent — it shows on the Payments page within a minute');
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
 // ── Branches: added by the admin; every branch picker is filled from this list ─
 let STATIONS = [];
 const STATIONS_KEY = 'pk_stations_v1';
@@ -645,14 +758,15 @@ let RENAMING = null;   // the branch whose name is being edited in Account → B
 
 function renderStationsAdmin() {
   $('stationsList').innerHTML = STATIONS.length
-    ? STATIONS.map(n => n === RENAMING
+    ? STATIONS.map(n => n === MP_EDITING ? tillEditor(n) : n === RENAMING
       ? `<div class="m-row" style="gap:8px;flex-wrap:wrap">
           <input type="text" id="rsName" maxlength="60" value="${esc(n)}" style="flex:1;min-width:160px" translate="no"
                  onkeydown="if(event.key==='Enter')renameStation();if(event.key==='Escape')cancelRename()">
           <span style="display:flex;gap:6px"><button class="btn btn-g btn-sm" onclick="renameStation()">Save</button>
           <button class="btn btn-o btn-sm" onclick="cancelRename()">Cancel</button></span></div>`
-      : `<div class="m-row"><span translate="no">🏪 ${esc(n)}</span>
-        <span style="display:flex;gap:6px">
+      : `<div class="m-row" style="flex-wrap:wrap;gap:6px"><span translate="no">🏪 ${esc(n)}${tillLabel(n)}</span>
+        <span style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-o btn-sm" onclick="MP_EDITING=this.dataset.name;RENAMING=null;renderStationsAdmin()" data-name="${esc(n)}">📲 M-Pesa</button>
           <button class="btn btn-o btn-sm" onclick="startRename(this.dataset.name)" data-name="${esc(n)}">✏️ Rename</button>
           <button class="btn btn-r btn-sm" onclick="removeStation(this.dataset.name)" data-name="${esc(n)}">Remove</button>
         </span></div>`).join('')
@@ -660,7 +774,7 @@ function renderStationsAdmin() {
   if (RENAMING && $('rsName')) { $('rsName').focus(); $('rsName').select(); }
 }
 
-function startRename(name) { RENAMING = name; renderStationsAdmin(); }
+function startRename(name) { RENAMING = name; MP_EDITING = null; renderStationsAdmin(); }
 function cancelRename() { RENAMING = null; renderStationsAdmin(); }
 
 async function renameStation() {
@@ -678,7 +792,7 @@ async function renameStation() {
     $('hStation').textContent = sv('fStation') || 'PetroKenya';
     renderStationsAdmin();
     await syncFromServer();
-    loadRecs(); loadUsers(); applyUserToUI(); loadRecordForDateAndStation();
+    loadRecs(); loadUsers(); applyUserToUI(); loadRecordForDateAndStation(); loadMpesaStatus();
     toast(res.station === old ? '✅ Branch name unchanged' : '✅ Branch renamed — ' + old + ' → ' + res.station);
   } catch (e) { toast('⚠️ ' + e.message, true); }
 }
@@ -1326,7 +1440,7 @@ setInterval(() => { if (document.visibilityState === 'visible' && USER) refreshA
 
 // ── Alert settings (admin, in the Account window) ────────────────────────────
 const ALERT_FIELDS = { asDip: 'dip_shortage_litres', asCash: 'cash_shortage_kes', asAttendant: 'attendant_shortage_kes',
-  asDelivery: 'short_delivery_litres', asLowPetrol: 'low_stock_petrol', asLowDiesel: 'low_stock_diesel', asLowKero: 'low_stock_kero' };
+  asDelivery: 'short_delivery_litres', asMpesa: 'mpesa_mismatch_kes', asLowPetrol: 'low_stock_petrol', asLowDiesel: 'low_stock_diesel', asLowKero: 'low_stock_kero' };
 
 async function loadAlertSettings() {
   try {
@@ -1467,6 +1581,7 @@ function showPage(name) {
     if (page === 'credit') renderCreditPage();
     if (page === 'report') renderReport();
     if (page === 'exp') loadCustomers();
+    if (page === 'pay') loadMpesaPayments();
   }
   window.scrollTo(0, 0);
 }
@@ -1607,6 +1722,7 @@ function loadRecordForDateAndStation() {
     toast('🆕 No record for ' + date + ' · ' + station + ' — ready for new entry');
   }
   applyOwnerPrices();
+  loadMpesaPayments();
 }
 
 // ── Opening readings: today's openings should equal the previous saved day's closings ─
@@ -2424,6 +2540,9 @@ function openDetail(evt, id) {
   // Payments
   const collected = num(r.mpesa_amount) + num(r.cash_amount) + num(r.credit_amount) + num(r.card_amount);
   $('rdMpesa').textContent  = 'KES ' + fmt(num(r.mpesa_amount));
+  $('rdMpesaRxRow').hidden = !r.mpesa_received_count;
+  $('rdMpesaRx').textContent = r.mpesa_received_count
+    ? `KES ${fmt(num(r.mpesa_received))} (${r.mpesa_received_count} payment${r.mpesa_received_count === 1 ? '' : 's'})` : '';
   $('rdCash').textContent   = 'KES ' + fmt(num(r.cash_amount));
   $('rdCredit').textContent = 'KES ' + fmt(num(r.credit_amount));
   $('rdCard').textContent   = 'KES ' + fmt(num(r.card_amount));

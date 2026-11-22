@@ -32,6 +32,9 @@ API (all JSON; everything except /api/health and /api/login needs a signed-in se
     POST   /api/me/logout-all            POST /api/users/<id>/logout   (admin)
     POST   /api/password/forgot {username}    POST /api/password/reset {username, code, new_password}
     POST   /api/me/contact {email, phone}     PUT /api/users/<id>/contact   (admin)
+    GET    /api/mpesa/payments?station=&date=   GET /api/mpesa/status (admin)   POST /api/mpesa/simulate (admin, sandbox)
+    PUT    /api/stations/<name>/mpesa {shortcode, type}   POST /api/stations/<name>/mpesa/register   (admin)
+    POST   /api/c2b/<secret>/confirm|validate   (Safaricom reports payments here; no sign-in)
     POST   /api/records/<id>/approve     (manager of the branch, admin)
     POST   /api/records/<id>/reopen      (admin)
     GET    /api/records/previous?station=&date=     latest saved day before a date
@@ -515,7 +518,7 @@ class Store:
                 c.execute("UPDATE record_versions SET data = json_set(data, '$.station', ?) "
                           "WHERE json_extract(data, '$.station') = ?", (new, old))
                 c.execute("UPDATE record_versions SET station = ? WHERE station = ?", (new, old))
-                for table in ("users", "prices", "credit_payments", "uploads"):
+                for table in ("users", "prices", "credit_payments", "uploads", "mpesa_payments"):
                     if table in tables:
                         c.execute("UPDATE %s SET station = ? WHERE station = ?" % table, (new, old))
                 if "alerts" in tables:
@@ -540,6 +543,8 @@ class Store:
                                % (name, used, users))
             self.conn.execute("DELETE FROM stations WHERE name = ?", (name,))
             self.conn.execute("DELETE FROM prices WHERE station = ?", (name,))
+            if self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'mpesa_payments'").fetchone():
+                self.conn.execute("UPDATE mpesa_payments SET station = NULL WHERE station = ?", (name,))
             self.conn.commit()
 
     @staticmethod
@@ -1227,6 +1232,13 @@ class Handler(BaseHTTPRequestHandler):
         return (os.environ.get("PK_SECURE_COOKIE") == "1"
                 or (self.headers.get("X-Forwarded-Proto") or "").lower() == "https")
 
+    def _public_url(self):
+        """The address people (and Safaricom) reach this server on."""
+        if os.environ.get("PK_PUBLIC_URL"):
+            return os.environ["PK_PUBLIC_URL"].rstrip("/")
+        host = re.sub(r"[^A-Za-z0-9.:-]", "", self.headers.get("Host") or "")
+        return ("https" if self._https() else "http") + "://" + host
+
     def _client_ip(self):
         fwd = self.headers.get("X-Forwarded-For")
         if TRUST_PROXY and fwd:
@@ -1307,6 +1319,9 @@ class Handler(BaseHTTPRequestHandler):
         for fuel, price in prices.items():
             rec[fuel + "_price"], rec[fuel + "_cost"] = price["sell"], price["cost"]
         rec["prices_set_by_owner"] = sorted(prices)
+        # What Safaricom reported for this branch and day, to check the typed M-Pesa total against
+        received = self.mpesa.payments(rec["station"], rec["report_date"])
+        rec["mpesa_received"], rec["mpesa_received_count"] = received["total"], received["count"]
         rec["opening_mismatches"] = opening_mismatches(
             rec, self.store.previous(rec["station"], rec["report_date"]))
         # Receipt photos must be real uploads from the same branch
@@ -1348,6 +1363,19 @@ class Handler(BaseHTTPRequestHandler):
                 token, user = self.auth.login(body.get("username"), body.get("password"), self._client_ip())
                 return self._json(HTTPStatus.OK, {"user": user},
                                   {"Set-Cookie": self._cookie(token, SESSION_DAYS * 86400)})
+
+            # Safaricom reports each payment here; the secret in the address is the only proof it's them
+            mm = re.fullmatch(r"/api/c2b/([0-9A-Za-z_-]{16,128})/(confirm|validate)", path)
+            if mm and m == "POST":
+                if not hmac.compare_digest(mm.group(1), self.mpesa.callback_secret()):
+                    raise ApiError(HTTPStatus.NOT_FOUND, "Not found")
+                if mm.group(2) == "confirm":
+                    try:
+                        payload = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), MAX_BODY)) or b"{}")
+                        self.mpesa.record(payload, now_iso())
+                    except (ValueError, business.Error) as e:
+                        self.log_message("M-Pesa confirmation not stored: %s", getattr(e, "message", e))
+                return self._json(HTTPStatus.OK, {"ResultCode": 0, "ResultDesc": "Accepted"})
 
             if path == "/api/password/forgot" and m == "POST":
                 return self._json(HTTPStatus.OK, self._send_reset_code(self._body().get("username")))
@@ -1411,6 +1439,32 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/me/logout-all" and m == "POST":
             ended = self.auth.logout_everywhere(user["id"], keep_token=self._token())
             return self._json(HTTPStatus.OK, {"signed_out": ended})
+        # ── M-Pesa ──
+        if path == "/api/mpesa/payments" and m == "GET":
+            station = self._station_scope(user, q.get("station"))
+            date = q.get("date") or today()
+            if not station or not DATE_RE.match(date):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "station and date are required")
+            return self._json(HTTPStatus.OK, self.mpesa.payments(station, date))
+        if path == "/api/mpesa/status" and m == "GET":
+            self._require_admin(user)
+            return self._json(HTTPStatus.OK, {
+                "configured": self.mpesa.configured, "env": self.mpesa.env, "branches": self.mpesa.branches(),
+                "unassigned": [dict(r) for r in self.mpesa.unassigned()]})
+        if path == "/api/mpesa/simulate" and m == "POST":
+            self._require_admin(user)
+            body = self._body()
+            return self._json(HTTPStatus.OK, {"safaricom": self.mpesa.simulate(body.get("station"), body.get("amount"))})
+        mm = re.fullmatch(r"/api/stations/([^/]+)/mpesa(/register)?", path)
+        if mm:
+            self._require_admin(user)
+            station = unquote(mm.group(1))
+            if not mm.group(2) and m == "PUT":
+                body = self._body()
+                return self._json(HTTPStatus.OK, {"branch": self.mpesa.set_till(station, body.get("shortcode"), body.get("type"))})
+            if mm.group(2) and m == "POST":
+                return self._json(HTTPStatus.OK, {"branch": self.mpesa.register(station, self._public_url())})
+
         if path == "/api/me/contact" and m == "POST":
             body = self._body()
             return self._json(HTTPStatus.OK, {"user": self.auth.set_contact(user["id"], body.get("email"), body.get("phone"))})
@@ -1809,7 +1863,7 @@ def make_server(host=HOST, port=PORT, db_path=DB_PATH, bootstrap=True):
     handler = type("BoundHandler", (Handler,), {
         "store": store, "auth": auth, "settings": settings, "mailer": mailer,
         "alerts": business.Alerts(store, settings, mailer), "credit": business.Credit(store),
-        "uploads": business.Uploads(store, uploads_dir), "sms": business.Sms(),
+        "uploads": business.Uploads(store, uploads_dir), "sms": business.Sms(), "mpesa": business.Mpesa(store),
         "backups": business.Backups(store, settings, mailer, uploads_dir, backups_dir)})
     return ThreadingHTTPServer((host, port), handler)
 

@@ -68,6 +68,32 @@ be wiped on every restart. Each push to the chosen branch redeploys automaticall
 add a volume mounted at `/data`, and set `PK_DB=/data/petrokenya.sqlite3`,
 `PK_ADMIN_USER`, `PK_ADMIN_PASSWORD`, `PK_SECURE_COOKIE=1` and `PK_TRUST_PROXY=1`.
 
+## M-Pesa (Safaricom Daraja)
+
+Safaricom reports every payment to a branch's till or paybill to the app the moment it's made.
+The **💳 Payments** page then shows that day's payments and total, fills in the M-Pesa amount when
+it's blank, and **Use this total** copies it in. Saving a day whose typed M-Pesa total differs from
+Safaricom's by more than the alert setting (default KES 100) raises an **M-Pesa doesn't match** alert.
+
+**Set it up**
+
+1. Create an account at [developer.safaricom.co.ke](https://developer.safaricom.co.ke), create an
+   app with the M-Pesa products, and copy its **Consumer Key** and **Consumer Secret**.
+2. On Render → Environment, set `PK_MPESA_CONSUMER_KEY`, `PK_MPESA_CONSUMER_SECRET` and
+   `PK_MPESA_ENV=sandbox`, then save.
+3. In the app, **👤 → 🏪 Branches → 📲 M-Pesa** for each branch: enter its till or paybill number
+   (for testing, the sandbox shortcode from the Daraja portal), **Save**, then
+   **🔗 Connect to Safaricom**. In the sandbox, **🧪 Test payment** sends a pretend KES 10.
+4. When testing works, apply for **Go Live** on the Daraja portal with your real tills. Once
+   Safaricom approves, put the live app's key and secret on Render, set `PK_MPESA_ENV=production`,
+   enter the real numbers and **Connect** each branch again.
+
+Safaricom reports payments to `https://<your site>/api/c2b/<secret>/confirm`. Safaricom doesn't
+sign these messages, so the address contains a random secret (made on first use, or set
+`PK_MPESA_CALLBACK_SECRET`); a message to any other address is ignored. Each M-Pesa code is
+stored once, however often Safaricom repeats it. Payments to a number not yet given to a branch
+are kept and join that branch as soon as its number is entered.
+
 ## Backups
 
 - **Every night** the server writes a backup zip (the database and receipt photos) into a
@@ -231,6 +257,8 @@ python3 backend/server.py reset-password mary
 | `PK_SECURE_COOKIE` | auto | `1` forces the Secure cookie flag (auto when behind an HTTPS proxy) |
 | `PK_SMTP_HOST`, `PK_SMTP_PORT`, `PK_SMTP_USER`, `PK_SMTP_PASSWORD`, `PK_SMTP_FROM` | — | Mail account for alert and backup emails (port 587 uses STARTTLS, 465 uses SSL) |
 | `PK_SMS_USERNAME`, `PK_SMS_API_KEY`, `PK_SMS_SENDER` | — | Africa's Talking account for password reset codes by SMS (`sandbox` as the username uses their test system) |
+| `PK_MPESA_CONSUMER_KEY`, `PK_MPESA_CONSUMER_SECRET`, `PK_MPESA_ENV` | — / `sandbox` | Safaricom Daraja app, for M-Pesa payments (`production` after Go Live) |
+| `PK_PUBLIC_URL` | from the request | The site's https address, given to Safaricom when connecting a till |
 | `PK_TRUST_PROXY` | off | `1` reads the visitor's address from `X-Forwarded-For`. Set it **only** behind a proxy you control (Render, Railway); never when the server faces the internet directly |
 
 ## API
