@@ -45,7 +45,7 @@
   function load() {
     if (memory) return memory;
     try { memory = JSON.parse(localStorage.getItem(DB_KEY)); } catch (e) { memory = null; }
-    if (!memory || memory.version !== 5) memory = seed();
+    if (!memory || memory.version !== 6) memory = seed();
     return memory;
   }
   function save() { try { localStorage.setItem(DB_KEY, JSON.stringify(memory)); } catch (e) { /* kept in memory */ } }
@@ -308,7 +308,7 @@
 
   // ── Example data for a first visit ─────────────────────────────────────────
   function seed() {
-    const db = { version: 5, seq: {}, users: [], records: [], versions: [], prices: [], alerts: [], customers: [],
+    const db = { version: 6, seq: {}, users: [], records: [], versions: [], prices: [], alerts: [], customers: [],
       payments: [], uploads: {}, settings: { ...DEFAULT_SETTINGS } };
     memory = db;
     const t = kenyaToday();
@@ -320,6 +320,12 @@
     const owner = db.users[0], brian = db.users[2], mary = db.users[1];
     const P = { petrol: [186.31, 171.2], diesel: [171.6, 158.4], kero: [161.75, 149.1] };
     db.stations = [...EXAMPLE_STATIONS];
+    db.tills = { 'Ngeria Branch': { station: 'Ngeria Branch', shortcode: '5123456', type: 'till', registered_at: nowIso() } };
+    db.mpesa = [];
+    [[0, '07:42', 2500, 'Example: JOHN KAMAU'], [0, '08:15', 1200, 'Example: AMINA ODHIAMBO'], [0, '09:03', 4000, 'Example: PETER MWANGI'],
+     [0, '10:27', 800, 'Example: GRACE WANJIRU']].forEach(([back, hm, amount, name], i) => db.mpesa.push({
+      trans_id: 'EXM' + (100 + i), amount, name, phone: '2547 ***** 1' + i, station: 'Ngeria Branch', shortcode: '5123456',
+      paid_at: daysBefore(t, back) + 'T' + hm + ':00' }));
     EXAMPLE_STATIONS.forEach(st => FUELS.forEach(f => db.prices.push({ id: nextId(db, 'price'), station: st, fuel: f,
       sell: P[f][0], cost: P[f][1], effective_from: daysBefore(t, 20), set_by: 'owner' })));
     db.customers.push({ id: nextId(db, 'customer'), name: 'Example: Peter Otieno', company: 'Example Matatu Sacco',
@@ -428,6 +434,43 @@
       checkPassword(body.new_password, user.username); user.password = body.new_password; return { ok: true };
     }
     if (path === '/api/me/logout-all') return { signed_out: 0 };
+    // M-Pesa: the preview has example payments and a till; "Test payment" adds one in this browser
+    if (path === '/api/mpesa/payments') {
+      const st = scope(pu, q.station), date = q.date || kenyaToday();
+      const list = (db.mpesa || []).filter(p => p.station === st && p.paid_at.slice(0, 10) === date).sort((a, b) => a.paid_at.localeCompare(b.paid_at));
+      return { payments: list, count: list.length, total: r2(list.reduce((t, p) => t + p.amount, 0)) };
+    }
+    if (path === '/api/mpesa/status') {
+      requireAdmin(pu);
+      db.tills = db.tills || {};
+      return { configured: true, env: 'sandbox', unassigned: [],
+        branches: db.stations.map(n => ({ station: n, shortcode: (db.tills[n] || {}).shortcode || '', type: (db.tills[n] || {}).type || 'till',
+          registered_at: (db.tills[n] || {}).registered_at || null })) };
+    }
+    if ((m = path.match(/^\/api\/stations\/(.+)\/mpesa(\/register)?$/))) {
+      requireAdmin(pu);
+      const name = decodeURIComponent(m[1]); db.tills = db.tills || {};
+      if (!db.stations.includes(name)) fail(404, 'Branch not found');
+      if (m[2]) {
+        if (!(db.tills[name] || {}).shortcode) fail(400, "Add the branch's till or paybill number first");
+        db.tills[name].registered_at = nowIso();
+        return { branch: db.tills[name] };
+      }
+      const code = String(body.shortcode || '').replace(/\s/g, '');
+      if (code && !/^\d{5,7}$/.test(code)) fail(400, 'A till or paybill number is 5 to 7 digits');
+      db.tills[name] = { station: name, shortcode: code, type: body.type === 'paybill' ? 'paybill' : 'till', registered_at: null };
+      return { branch: db.tills[name] };
+    }
+    if (path === '/api/mpesa/simulate') {
+      requireAdmin(pu);
+      const t = (db.tills || {})[body.station];
+      if (!t || !t.shortcode) fail(400, "Add the branch's till or paybill number first");
+      const now = new Date(Date.now() + 3 * 3600e3).toISOString().slice(0, 19);
+      db.mpesa = db.mpesa || [];
+      db.mpesa.push({ trans_id: 'TEST' + Math.random().toString(36).slice(2, 8).toUpperCase(), amount: Math.round(num(body.amount) || 10),
+        paid_at: now, name: 'Example Customer', phone: '2547 ***** 149', station: body.station, shortcode: t.shortcode });
+      return { safaricom: { ResponseDescription: 'Accept the service request successfully.' } };
+    }
     if (path === '/api/stations' && method === 'GET') { const s = scope(pu, null); return { stations: s ? [s] : db.stations }; }
     if (path === '/api/stations' && method === 'POST') {
       requireAdmin(pu);
@@ -447,7 +490,8 @@
       if (taken) fail(409, 'There is already a branch called ' + taken);
       db.stations = db.stations.map(x => x === old ? name : x);
       const move = o => { if (o && o.station === old) o.station = name; };
-      [db.records, db.users, db.prices, db.alerts, db.payments].forEach(list => (list || []).forEach(move));
+      [db.records, db.users, db.prices, db.alerts, db.payments, db.mpesa].forEach(list => (list || []).forEach(move));
+      if (db.tills && db.tills[old]) { db.tills[name] = { ...db.tills[old], station: name }; delete db.tills[old]; }
       (db.versions || []).forEach(v => move(v.data));
       Object.values(db.uploads || {}).forEach(move);
       (db.alerts || []).forEach(a => { if (a.station === name && a.message) a.message = a.message.split(old).join(name); });

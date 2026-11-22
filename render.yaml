@@ -30,6 +30,12 @@ services:
         sync: false
       - key: PK_SMTP_PASSWORD    # an app password, kept secret by Render
         sync: false
+      - key: PK_MPESA_CONSUMER_KEY      # optional: M-Pesa payments from Safaricom Daraja
+        sync: false
+      - key: PK_MPESA_CONSUMER_SECRET
+        sync: false
+      - key: PK_MPESA_ENV               # sandbox while testing, production after Go Live
+        value: sandbox
       - key: PK_SMS_USERNAME     # optional: password reset codes by SMS (Africa's Talking)
         sync: false
       - key: PK_SMS_API_KEY

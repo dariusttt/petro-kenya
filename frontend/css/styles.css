@@ -389,3 +389,12 @@ body.no-profit .pbox-4 .pbox-item+.pbox-item{border-left:1px solid var(--brd);bo
   font-size:1.05rem;line-height:1;padding:8px;opacity:.7;border-radius:6px}
 .pw-eye:hover,.pw-eye:focus-visible{opacity:1;background:rgba(255,255,255,.06)}
 .login-error.ok{color:var(--acc)}
+
+/* 📲 M-Pesa payments reported by Safaricom */
+.mp-received{margin-top:12px;padding:12px 14px;border:1px solid rgba(0,166,81,.3);border-radius:9px;background:rgba(0,166,81,.06);
+  font-family:var(--mono);font-size:.74rem}
+.mp-received .mp-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px}
+.mp-received .mp-total{color:#00a651;font-weight:600;font-size:.9rem}
+.mp-received details{margin-top:8px}
+.mp-received summary{cursor:pointer;color:var(--mut)}
+.mp-received .m-row{font-size:.72rem}

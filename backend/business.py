@@ -16,6 +16,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -37,6 +38,7 @@ DEFAULT_SETTINGS = {
     "low_stock_kero": 1000,
     "alert_emails": "",              # comma-separated addresses that get alert emails
     "backup_emails": "",             # comma-separated addresses that get the nightly backup
+    "mpesa_mismatch_kes": 100,       # typed M-Pesa total differs this much from what Safaricom reported
 }
 
 
@@ -211,13 +213,19 @@ def evaluate_alerts(rec, settings):
                         "%s delivery %s was %s L short of the order — %s"
                         % (FUEL_NAMES.get(d.get("fuel"), "Fuel"), d.get("note_no") or "", "{:,.0f}".format(short),
                            where)))
+    if rec.get("mpesa_received_count"):
+        diff = num(rec.get("mpesa_amount")) - num(rec.get("mpesa_received"))
+        if abs(diff) > settings["mpesa_mismatch_kes"]:
+            out.append(("mpesa_mismatch", "day", "M-Pesa entered (KES %s) is KES %s %s than Safaricom reported (KES %s) — %s"
+                        % ("{:,.2f}".format(num(rec.get("mpesa_amount"))), "{:,.2f}".format(abs(diff)),
+                           "more" if diff > 0 else "less", "{:,.2f}".format(num(rec.get("mpesa_received"))), where)))
     return out
 
 
 ALERT_TITLES = {
     "dip_shortage": "Tank stock short", "low_stock": "Low tank stock", "cash_shortage": "Cash short",
     "attendant_shortage": "Attendant short", "opening_mismatch": "Opening readings changed",
-    "short_delivery": "Short delivery",
+    "short_delivery": "Short delivery", "mpesa_mismatch": "M-Pesa doesn't match Safaricom",
 }
 
 
@@ -659,6 +667,211 @@ class Sms:
                 sys.stderr.write("SMS failed: %r\n" % e)
         threading.Thread(target=run, daemon=True).start()
         return True
+
+
+# ── M-Pesa (Safaricom Daraja) ─────────────────────────────────────────────────
+DARAJA_URLS = {"sandbox": "https://sandbox.safaricom.co.ke", "production": "https://api.safaricom.co.ke"}
+MPESA_CODE_RE = re.compile(r"^\d{5,7}$")
+
+
+class Mpesa:
+    """Payments to the branches' tills or paybills, reported by Safaricom the moment they're made
+    (Daraja C2B). Settings: PK_MPESA_CONSUMER_KEY, PK_MPESA_CONSUMER_SECRET and PK_MPESA_ENV
+    ("sandbox" while testing, "production" once Safaricom has approved Go Live)."""
+
+    def __init__(self, store):
+        self.store = store
+        self.key = os.environ.get("PK_MPESA_CONSUMER_KEY", "").strip()
+        self.secret = os.environ.get("PK_MPESA_CONSUMER_SECRET", "").strip()
+        self.env = "production" if os.environ.get("PK_MPESA_ENV", "").strip().lower() == "production" else "sandbox"
+        self.base = (os.environ.get("PK_MPESA_BASE_URL") or DARAJA_URLS[self.env]).rstrip("/")
+        self.register_path = os.environ.get("PK_MPESA_REGISTER_PATH") or (
+            "/mpesa/c2b/v2/registerurl" if self.env == "production" else "/mpesa/c2b/v1/registerurl")
+        self._token = (None, 0.0)
+        c = store.conn
+        c.execute("""CREATE TABLE IF NOT EXISTS mpesa_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, trans_id TEXT NOT NULL UNIQUE, shortcode TEXT NOT NULL,
+            station TEXT, amount REAL NOT NULL, paid_at TEXT NOT NULL, report_date TEXT NOT NULL,
+            phone TEXT, name TEXT, bill_ref TEXT, kind TEXT, raw TEXT NOT NULL, received_at TEXT NOT NULL)""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_mpesa_day ON mpesa_payments (station, report_date)")
+        c.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        cols = [r["name"] for r in c.execute("PRAGMA table_info(stations)").fetchall()]
+        for col in ("mpesa_shortcode", "mpesa_type", "mpesa_registered_at"):
+            if col not in cols:
+                c.execute("ALTER TABLE stations ADD COLUMN %s TEXT" % col)
+        c.commit()
+
+    @property
+    def configured(self):
+        return bool(self.key and self.secret)
+
+    def callback_secret(self):
+        """The secret part of the address Safaricom reports payments to. Safaricom doesn't sign its
+        messages, so only someone who knows this address can post one."""
+        env = os.environ.get("PK_MPESA_CALLBACK_SECRET", "").strip()
+        if env:
+            return env
+        with self.store.lock:
+            row = self.store.conn.execute("SELECT value FROM kv WHERE key = 'mpesa_callback_secret'").fetchone()
+            if row:
+                return row["value"]
+            value = secrets.token_hex(16)
+            self.store.conn.execute("INSERT INTO kv (key, value) VALUES ('mpesa_callback_secret', ?)", (value,))
+            self.store.conn.commit()
+            return value
+
+    # ── Branch tills ──
+    def branches(self):
+        with self.store.lock:
+            rows = self.store.conn.execute(
+                "SELECT name, mpesa_shortcode, mpesa_type, mpesa_registered_at FROM stations ORDER BY id").fetchall()
+        return [{"station": r["name"], "shortcode": r["mpesa_shortcode"] or "", "type": r["mpesa_type"] or "till",
+                 "registered_at": r["mpesa_registered_at"]} for r in rows]
+
+    def branch(self, station):
+        found = next((b for b in self.branches() if b["station"] == station), None)
+        if not found:
+            raise Error(HTTPStatus.NOT_FOUND, "Branch not found")
+        return found
+
+    def set_till(self, station, shortcode, kind):
+        self.branch(station)
+        shortcode = re.sub(r"\s", "", str(shortcode or ""))
+        kind = kind if kind in ("till", "paybill") else "till"
+        if shortcode and not MPESA_CODE_RE.match(shortcode):
+            raise Error(HTTPStatus.BAD_REQUEST, "A till or paybill number is 5 to 7 digits")
+        other = next((b["station"] for b in self.branches() if shortcode and b["shortcode"] == shortcode
+                      and b["station"] != station), None)
+        if other:
+            raise Error(HTTPStatus.CONFLICT, "%s already uses %s" % (other, shortcode))
+        with self.store.lock:
+            self.store.conn.execute("UPDATE stations SET mpesa_shortcode = ?, mpesa_type = ?, mpesa_registered_at = NULL "
+                                    "WHERE name = ?", (shortcode or None, kind, station))
+            # Payments that came in for this number before it was assigned now belong to the branch
+            if shortcode:
+                self.store.conn.execute("UPDATE mpesa_payments SET station = ? WHERE shortcode = ? AND station IS NULL",
+                                        (station, shortcode))
+            self.store.conn.commit()
+        return self.branch(station)
+
+    def station_for(self, shortcode):
+        return next((b["station"] for b in self.branches() if b["shortcode"] and b["shortcode"] == str(shortcode)), None)
+
+    # ── Payments reported by Safaricom ──
+    def record(self, payload, now):
+        """Store one confirmation from Safaricom. Repeats of the same M-Pesa code are ignored."""
+        if not isinstance(payload, dict):
+            raise Error(HTTPStatus.BAD_REQUEST, "Expected a JSON object")
+        trans_id = str(payload.get("TransID") or "").strip()[:30]
+        amount = num(payload.get("TransAmount"))
+        shortcode = str(payload.get("BusinessShortCode") or "").strip()[:20]
+        if not trans_id or amount <= 0 or not shortcode:
+            raise Error(HTTPStatus.BAD_REQUEST, "Missing TransID, TransAmount or BusinessShortCode")
+        raw_time = str(payload.get("TransTime") or "")
+        try:
+            paid = datetime.strptime(raw_time, "%Y%m%d%H%M%S")      # Safaricom sends Kenya time
+        except ValueError:
+            paid = datetime.now(KENYA).replace(tzinfo=None)
+        name = " ".join(str(payload.get(k) or "") for k in ("FirstName", "MiddleName", "LastName")).split()
+        name = " ".join(name)
+        station = self.station_for(shortcode)          # (looked up before taking the database lock)
+        try:
+            with self.store.lock:
+                self.store.conn.execute(
+                    "INSERT INTO mpesa_payments (trans_id, shortcode, station, amount, paid_at, report_date, phone, name,"
+                    " bill_ref, kind, raw, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (trans_id, shortcode, station, round(amount, 2),
+                     paid.strftime("%Y-%m-%dT%H:%M:%S"), paid.strftime("%Y-%m-%d"),
+                     str(payload.get("MSISDN") or "")[:80], name[:120], str(payload.get("BillRefNumber") or "")[:60],
+                     str(payload.get("TransactionType") or "")[:40], json.dumps(payload)[:4000], now))
+                self.store.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def payments(self, station, date):
+        with self.store.lock:
+            rows = self.store.conn.execute(
+                "SELECT trans_id, amount, paid_at, phone, name, bill_ref, shortcode FROM mpesa_payments "
+                "WHERE station = ? AND report_date = ? ORDER BY paid_at", (station, date)).fetchall()
+        items = [dict(r) for r in rows]
+        return {"payments": items, "count": len(items), "total": round(sum(p["amount"] for p in items), 2)}
+
+    def unassigned(self):
+        with self.store.lock:
+            return self.store.conn.execute(
+                "SELECT shortcode, COUNT(*) AS n, SUM(amount) AS total FROM mpesa_payments WHERE station IS NULL "
+                "GROUP BY shortcode").fetchall()
+
+    # ── Talking to Safaricom ──
+    def _call(self, method, path, body=None, auth=None):
+        req = urllib.request.Request(self.base + path, method=method,
+                                     data=json.dumps(body).encode() if body is not None else None,
+                                     headers={"Authorization": auth or "Bearer " + self._access_token(),
+                                              "Content-Type": "application/json", "Accept": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            try:
+                detail = json.loads(e.read() or b"{}")
+            except ValueError:
+                detail = {}
+            msg = detail.get("errorMessage") or detail.get("ResponseDescription") or detail.get("error_description") or str(e)
+            raise Error(HTTPStatus.BAD_GATEWAY, "Safaricom refused: %s" % msg)
+        except (OSError, ValueError) as e:
+            raise Error(HTTPStatus.BAD_GATEWAY, "Couldn't reach Safaricom: %s" % e)
+
+    def _access_token(self):
+        token, until = self._token
+        if token and time.time() < until - 60:
+            return token
+        if not self.configured:
+            raise Error(HTTPStatus.BAD_REQUEST, "M-Pesa isn't set up on the server (PK_MPESA_CONSUMER_KEY and "
+                                                "PK_MPESA_CONSUMER_SECRET)")
+        basic = base64.b64encode(("%s:%s" % (self.key, self.secret)).encode()).decode()
+        data = self._call("GET", "/oauth/v1/generate?grant_type=client_credentials", auth="Basic " + basic)
+        token = data.get("access_token")
+        if not token:
+            raise Error(HTTPStatus.BAD_GATEWAY, "Safaricom didn't accept the consumer key and secret")
+        self._token = (token, time.time() + float(data.get("expires_in") or 3599))
+        return token
+
+    def register(self, station, base_url):
+        """Tell Safaricom where to report this branch's payments."""
+        b = self.branch(station)
+        if not b["shortcode"]:
+            raise Error(HTTPStatus.BAD_REQUEST, "Add the branch's till or paybill number first")
+        if not base_url.startswith("https://"):
+            raise Error(HTTPStatus.BAD_REQUEST, "Safaricom only reports payments to an https:// address — "
+                                                "connect from the hosted site, not a local copy")
+        # Safaricom rejects addresses containing words such as "mpesa", hence /api/c2b/…
+        hook = "%s/api/c2b/%s" % (base_url.rstrip("/"), self.callback_secret())
+        res = self._call("POST", self.register_path, {
+            "ShortCode": b["shortcode"], "ResponseType": "Completed",
+            "ConfirmationURL": hook + "/confirm", "ValidationURL": hook + "/validate"})
+        if str(res.get("ResponseCode", "0")) not in ("0", "00000000"):
+            raise Error(HTTPStatus.BAD_GATEWAY, "Safaricom refused: %s" % (res.get("ResponseDescription") or res))
+        with self.store.lock:
+            self.store.conn.execute("UPDATE stations SET mpesa_registered_at = ? WHERE name = ?",
+                                    (datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"), station))
+            self.store.conn.commit()
+        return self.branch(station)
+
+    def simulate(self, station, amount):
+        """Sandbox only: ask Safaricom to send a pretend payment to the branch's number."""
+        if self.env != "sandbox":
+            raise Error(HTTPStatus.BAD_REQUEST, "Test payments only work while PK_MPESA_ENV is sandbox")
+        b = self.branch(station)
+        if not b["shortcode"]:
+            raise Error(HTTPStatus.BAD_REQUEST, "Add the branch's till or paybill number first")
+        amount = int(num(amount))
+        if amount < 1 or amount > 70000:
+            raise Error(HTTPStatus.BAD_REQUEST, "Choose an amount between 1 and 70,000")
+        return self._call("POST", "/mpesa/c2b/v1/simulate", {
+            "ShortCode": b["shortcode"], "Amount": amount, "Msisdn": "254708374149",
+            "CommandID": "CustomerPayBillOnline" if b["type"] == "paybill" else "CustomerBuyGoodsOnline",
+            "BillRefNumber": "PetroKenya test" if b["type"] == "paybill" else ""})
 
 
 # ── Backups ───────────────────────────────────────────────────────────────────

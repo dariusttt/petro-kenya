@@ -1081,3 +1081,111 @@ class MailErrorTest(unittest.TestCase):
                     os.environ[k] = v
             srv.shutdown()
             srv.server_close()
+
+
+class MpesaTest(ServerCase):
+    """Safaricom reports payments; they're filed under the branch whose till it is, and checked."""
+
+    def setUp(self):
+        super().setUp()
+        h = self.httpd.RequestHandlerClass
+        self.mpesa = h.mpesa
+        h.store.conn.execute("DELETE FROM mpesa_payments")
+        h.store.conn.execute("UPDATE stations SET mpesa_shortcode = NULL, mpesa_type = NULL, mpesa_registered_at = NULL")
+        h.store.conn.commit()
+
+    def confirm(self, trans_id, amount, shortcode="5123456", when="20261014093015", secret=None):
+        body = {"TransactionType": "Buy Goods", "TransID": trans_id, "TransTime": when, "TransAmount": str(amount),
+                "BusinessShortCode": shortcode, "BillRefNumber": "", "MSISDN": "2547 ***** 126",
+                "FirstName": "JOHN", "MiddleName": "", "LastName": "DOE"}
+        return Client(self.base).req("POST", "/api/c2b/%s/confirm" % (secret or self.mpesa.callback_secret()), body)
+
+    def test_payments_are_filed_by_till_and_counted_once(self):
+        self.assertEqual(self.confirm("RJ1", 500, secret="x" * 32)[0], 404)            # wrong secret
+        status, res, _ = self.confirm("RJ1", 500)
+        self.assertEqual((status, res["ResultCode"]), (200, 0))
+        self.assertEqual(self.confirm("RJ1", 500)[1]["ResultCode"], 0)                  # repeat: accepted, ignored
+        self.assertEqual(Client(self.base).req("POST", "/api/c2b/%s/validate" % self.mpesa.callback_secret(), {})[1]["ResultCode"], 0)
+        staff = Client(self.base).login("kisumu")                                      # Moiben Branch
+        self.assertEqual(staff.req("PUT", "/api/stations/Moiben%20Branch/mpesa", {"shortcode": "5123456"})[0], 403)
+        self.assertEqual(self.admin.req("PUT", "/api/stations/Moiben%20Branch/mpesa", {"shortcode": "12"})[0], 400)
+        status, res, _ = self.admin.req("PUT", "/api/stations/Moiben%20Branch/mpesa", {"shortcode": "512 3456", "type": "till"})
+        self.assertEqual((status, res["branch"]["shortcode"]), (200, "5123456"))
+        self.assertEqual(self.admin.req("PUT", "/api/stations/Ngeria%20Branch/mpesa", {"shortcode": "5123456"})[0], 409)
+        self.confirm("RJ2", 250.5)
+        self.confirm("RJ3", 99, when="20261015070000")                                 # next day
+        day = staff.req("GET", "/api/mpesa/payments?date=2026-10-14")[1]
+        self.assertEqual((day["count"], day["total"]), (2, 750.5))                     # RJ1 joined once the till was set
+        self.assertEqual(day["payments"][0]["name"], "JOHN DOE")
+        self.assertEqual(staff.req("GET", "/api/mpesa/payments?station=Ngeria%20Branch&date=2026-10-14")[0], 403)
+        self.assertEqual(self.admin.req("GET", "/api/mpesa/status")[1]["configured"], self.mpesa.configured)
+
+    def test_a_saved_day_is_checked_against_safaricom(self):
+        self.admin.req("PUT", "/api/stations/Moiben%20Branch/mpesa", {"shortcode": "5123456"})
+        self.confirm("RK1", 20000)
+        day = {**SAMPLE, "station": "Moiben Branch", "mpesa_amount": 26000, "cash_amount": 1550}
+        rec = self.admin.req("POST", "/api/records", day)[1]["record"]
+        self.assertEqual((rec["mpesa_received"], rec["mpesa_received_count"]), (20000, 1))
+        kinds = [a["kind"] for a in self.admin.req("GET", "/api/alerts")[1]["alerts"]]
+        self.assertIn("mpesa_mismatch", kinds)
+        self.admin.req("POST", "/api/records", {**day, "mpesa_amount": 20000, "cash_amount": 7550})
+        kinds = [a["kind"] for a in self.admin.req("GET", "/api/alerts")[1]["alerts"]]
+        self.assertNotIn("mpesa_mismatch", kinds)
+
+    def test_connecting_a_till_and_test_payments_talk_to_safaricom(self):
+        import socketserver
+        from http.server import BaseHTTPRequestHandler
+        calls = []
+
+        class Daraja(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def reply(self, data):
+                out = json.dumps(data).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(out)
+
+            def do_GET(self):
+                calls.append(("GET", self.path, self.headers.get("Authorization")))
+                self.reply({"access_token": "tok123", "expires_in": "3599"})
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                calls.append(("POST", self.path, self.headers.get("Authorization"), body))
+                self.reply({"ResponseCode": "0", "ResponseDescription": "Success"})
+
+        srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Daraja)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        saved = (self.mpesa.key, self.mpesa.secret, self.mpesa.base, self.mpesa._token, self.mpesa.env)
+        try:
+            self.mpesa.key, self.mpesa.secret = "key", "secret"
+            self.mpesa.base, self.mpesa._token, self.mpesa.env = "http://127.0.0.1:%d" % srv.server_address[1], (None, 0), "sandbox"
+            self.assertEqual(self.admin.req("POST", "/api/stations/Moiben%20Branch/mpesa/register", {})[0], 400)  # no till yet
+            self.admin.req("PUT", "/api/stations/Moiben%20Branch/mpesa", {"shortcode": "600999", "type": "paybill"})
+            status, res, _ = self.admin.req("POST", "/api/stations/Moiben%20Branch/mpesa/register", {})
+            self.assertEqual(status, 400)                                  # the test server isn't https
+            self.assertIn("https", res["error"])
+            os.environ["PK_PUBLIC_URL"] = "https://petrokenya.example.com"
+            status, res, _ = self.admin.req("POST", "/api/stations/Moiben%20Branch/mpesa/register", {})
+            self.assertEqual(status, 200)
+            self.assertTrue(res["branch"]["registered_at"])
+            reg = [c for c in calls if c[0] == "POST"][-1]
+            self.assertEqual(reg[1], "/mpesa/c2b/v1/registerurl")
+            self.assertEqual(reg[3]["ShortCode"], "600999")
+            self.assertEqual(reg[3]["ConfirmationURL"],
+                             "https://petrokenya.example.com/api/c2b/%s/confirm" % self.mpesa.callback_secret())
+            self.assertNotIn("mpesa", reg[3]["ConfirmationURL"].lower())
+            self.assertTrue(calls[0][2].startswith("Basic ") and reg[2] == "Bearer tok123")
+            status, _, _ = self.admin.req("POST", "/api/mpesa/simulate", {"station": "Moiben Branch", "amount": 150})
+            sim = [c for c in calls if c[0] == "POST"][-1]
+            self.assertEqual((status, sim[1], sim[3]["CommandID"], sim[3]["Amount"]),
+                             (200, "/mpesa/c2b/v1/simulate", "CustomerPayBillOnline", 150))
+            self.assertEqual(len([c for c in calls if c[0] == "GET"]), 1)          # token reused
+        finally:
+            os.environ.pop("PK_PUBLIC_URL", None)
+            self.mpesa.key, self.mpesa.secret, self.mpesa.base, self.mpesa._token, self.mpesa.env = saved
+            srv.shutdown()
+            srv.server_close()

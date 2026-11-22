@@ -192,7 +192,13 @@ const SW = {
   // ── Record details ──
   'Fuel Sales': 'Mauzo ya Mafuta',
   'Pump Sales Meter Cross-Check': 'Ukaguzi wa Mita ya Mauzo', 'Branches (Admin)': 'Matawi (Msimamizi)', 'New branch name': 'Jina la tawi jipya',
-  'Add Branch': 'Ongeza Tawi', 'Forgot password?': 'Umesahau nenosiri?', 'Forgot password': 'Umesahau nenosiri',
+  'Add Branch': 'Ongeza Tawi', 'Show each payment': 'Onyesha kila malipo', 'Use this total': 'Tumia jumla hii',
+  'Matches the amount above': 'Inalingana na kiasi kilicho juu', 'Connect to Safaricom': 'Unganisha na Safaricom',
+  'Test payment': 'Malipo ya majaribio', 'Till (Buy Goods)': 'Till (Nunua Bidhaa)', 'Paybill': 'Paybill',
+  '(not connected yet)': '(bado haijaunganishwa)', 'Reported by Safaricom': 'Iliyoripotiwa na Safaricom',
+  'M-Pesa differs from Safaricom by more than (KES)': 'M-Pesa inatofautiana na Safaricom kwa zaidi ya (KES)',
+  'M-Pesa number saved — now tap Connect to Safaricom': 'Nambari ya M-Pesa imehifadhiwa — sasa bonyeza Unganisha na Safaricom',
+  'Connected — Safaricom will now report every payment to this number': 'Imeunganishwa — Safaricom sasa itaripoti kila malipo kwa nambari hii', 'Forgot password?': 'Umesahau nenosiri?', 'Forgot password': 'Umesahau nenosiri',
   'Enter your username. A 6-digit code is sent to your email or phone — or, if your account has neither, to the admin, who can give it to you.':
     'Andika jina lako la mtumiaji. Nambari ya tarakimu 6 itatumwa kwa barua pepe au simu yako — au, kama akaunti yako haina vyote viwili, kwa msimamizi, ambaye atakupa.',
   'Send Code': 'Tuma Nambari', '6-digit code': 'Nambari ya tarakimu 6', 'New password (8+ chars, not a common one)': 'Nenosiri jipya (herufi 8+, lisilo la kawaida)',
@@ -288,6 +294,8 @@ const SW_PATTERNS = [
   [/^Margin: (.+)$/, 'Kiwango cha faida: $1'],
   [/^Branch added — (.+)$/, 'Tawi limeongezwa — $1'],
   [/^Branch removed — (.+)$/, 'Tawi limeondolewa — $1'],
+  [/^Safaricom reported (\d+) payments?:$/, 'Safaricom iliripoti malipo $1:'],
+  [/^The amount above is KES ([\d.,]+) (more|less)$/, (m, a, w) => 'Kiasi kilicho juu ni KES ' + a + (w === 'more' ? ' zaidi' : ' pungufu')],
   [/^If that username exists, a 6-digit code has been sent to its email or phone — or, if it has neither, to the admin\. The code works for (\d+) minutes\.(.*)$/,
     'Kama jina hilo lipo, nambari ya tarakimu 6 imetumwa kwa barua pepe au simu yake — au, kama haina vyote viwili, kwa msimamizi. Nambari inafanya kazi kwa dakika $1.$2'],
   [/^Branch renamed — (.+) → (.+)$/, 'Jina la tawi limebadilishwa — $1 → $2'],

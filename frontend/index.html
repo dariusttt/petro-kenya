@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PetroKenya">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/styles.css?v=18">
+<link rel="stylesheet" href="css/styles.css?v=19">
 </head>
 <body>
 
@@ -279,6 +279,8 @@
           <div class="ig"><label>M-Pesa Ref (last txn)</label>
             <input type="text" id="fMpesaRef" placeholder="e.g. RGK7ABC123"></div>
         </div>
+        <!-- What Safaricom reported for this branch and day -->
+        <div id="mpReceived" class="mp-received" hidden></div>
       </div>
       <div class="box">
         <div class="box-title">💵 Cash at Hand</div>
@@ -923,6 +925,7 @@
     <div class="m-sec">
       <div class="m-sec-ttl">💳 Payments Collected</div>
       <div class="m-row"><span>M-Pesa</span><span id="rdMpesa">—</span></div>
+      <div class="m-row" id="rdMpesaRxRow" hidden><span>↳ Reported by Safaricom</span><span id="rdMpesaRx">—</span></div>
       <div class="m-row"><span>Cash</span><span id="rdCash">—</span></div>
       <div class="m-row"><span>Credit</span><span id="rdCredit">—</span></div>
       <div class="m-row"><span>Card</span><span id="rdCard">—</span></div>
@@ -1125,6 +1128,7 @@
 
     <div class="m-sec" id="stationsSec" hidden>
       <div class="m-sec-ttl">🏪 Branches (Admin)</div>
+      <div class="m-sub" id="mpStatus" style="margin:0 0 8px"></div>
       <div id="stationsList"></div>
       <div class="g2" style="gap:10px;margin-top:10px">
         <div class="ig" style="grid-column:1/-1"><label for="nsName">New branch name</label>
@@ -1175,6 +1179,7 @@
         <div class="ig"><label for="asCash">Cash short by more than (KES)</label><input type="number" id="asCash"></div>
         <div class="ig"><label for="asAttendant">Attendant short by more than (KES)</label><input type="number" id="asAttendant"></div>
         <div class="ig"><label for="asDelivery">Delivery short by more than (L)</label><input type="number" id="asDelivery"></div>
+        <div class="ig"><label for="asMpesa">M-Pesa differs from Safaricom by more than (KES)</label><input type="number" id="asMpesa"></div>
         <div class="ig"><label for="asLowPetrol">Low petrol below (L)</label><input type="number" id="asLowPetrol"></div>
         <div class="ig"><label for="asLowDiesel">Low diesel below (L)</label><input type="number" id="asLowDiesel"></div>
         <div class="ig"><label for="asLowKero">Low kerosene below (L)</label><input type="number" id="asLowKero"></div>
@@ -1273,7 +1278,7 @@
 
 <div id="toast"></div>
 
-<script src="js/i18n.js?v=18"></script>
-<script src="js/app.js?v=18"></script>
+<script src="js/i18n.js?v=19"></script>
+<script src="js/app.js?v=19"></script>
 </body>
 </html>
