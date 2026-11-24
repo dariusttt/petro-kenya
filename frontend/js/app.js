@@ -555,23 +555,63 @@ async function startSession() {
 
 function openAccount() {
   if (!USER) { showLogin(); return; }
+  const isAdmin = USER.role === 'admin';
   $('acctName').textContent = displayName(USER);
   $('meFullName').value = USER.full_name || '';
   $('meEmail').value = USER.email || '';
   $('mePhone').value = USER.phone || '';
-  $('acctRole').textContent = USER.role === 'admin' ? 'Administrator — all branches'
+  $('acctRole').textContent = isAdmin ? 'Administrator — all branches'
     : USER.role === 'manager' ? 'Branch Manager — ' + USER.station
     : 'Staff — ' + (USER.station || 'all branches');
-  $('usersSec').style.display = USER.role === 'admin' ? 'block' : 'none';
-  $('stationsSec').hidden = USER.role !== 'admin';
-  if (USER.role === 'admin') { MP_EDITING = null; renderStationsAdmin(); loadMpesaStatus(); }
-  ['pwCurrent','pwNew'].forEach(id => $(id).value = '');
-  if (USER.role === 'admin') loadUsers();
-  $('alertSettingsSec').hidden = USER.role !== 'admin';
-  if (USER.role === 'admin') loadAlertSettings();
-  $('backupSec').hidden = USER.role !== 'admin';
-  if (USER.role === 'admin') loadBackups();
+  updateMeSummary();
+  document.querySelectorAll('.lang-mini button').forEach(b => b.classList.toggle('on', b.dataset.lang === LANG));
+  // Start with every section folded, so the page is short
+  document.querySelectorAll('#accountOverlay details.acct-sec').forEach(d => { d.open = false; });
+  ['pwCurrent', 'pwNew'].forEach(id => $(id).value = '');
+  ['adminGroup', 'stationsSec', 'usersSec', 'alertSettingsSec', 'backupSec'].forEach(id => { $(id).hidden = !isAdmin; });
+  if (isAdmin) {
+    MP_EDITING = null; renderStationsAdmin(); loadMpesaStatus();
+    showAddUser(false); loadUsers();
+    loadAlertSettings();
+    BK_SHOW_ALL = false; loadBackups();
+  }
   $('accountOverlay').classList.add('open');
+}
+// One section open at a time
+document.querySelectorAll('#accountOverlay details.acct-sec').forEach(d => d.addEventListener('toggle', () => {
+  if (d.open) document.querySelectorAll('#accountOverlay details.acct-sec').forEach(o => { if (o !== d) o.open = false; });
+}));
+
+function updateMeSummary() {
+  const bits = [USER.full_name ? 'Name set' : 'No full name yet',
+                USER.email ? '✉️ email' : 'no email', USER.phone ? '📱 phone' : 'no phone'];
+  const reachable = USER.email || USER.phone;
+  // Without an email or phone, a forgotten password needs the admin — nudge people to add one
+  $('meSum').textContent = reachable ? bits.join(' · ') : '⚠️ Add an email or phone, so you can reset a forgotten password';
+  $('meSum').style.color = reachable ? '' : 'var(--acc2)';
+}
+
+async function saveMyDetails() {
+  if (!requireOnline('save your details')) return;
+  try {
+    await api('POST', '/me/name', { full_name: sv('meFullName') });
+    USER = (await api('POST', '/me/contact', { email: sv('meEmail'), phone: sv('mePhone') })).user;
+    storeSet('pk_user', USER);
+    applyUserToUI();
+    $('acctName').textContent = displayName(USER);
+    $('meEmail').value = USER.email || '';
+    $('mePhone').value = USER.phone || '';
+    updateMeSummary();
+    if (USER.role === 'admin') loadUsers();
+    $('meSec').open = false;
+    toast('✅ Your details are saved');
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
+function showAddUser(on) {
+  $('nuForm').hidden = !on;
+  $('nuOpenRow').hidden = on;
+  if (on) setTimeout(() => $('nuFullName').focus(), 50);
 }
 function closeAccount() { $('accountOverlay').classList.remove('open'); }
 
@@ -604,6 +644,7 @@ async function changePassword() {
     await api('POST', '/me/password', { current_password: $('pwCurrent').value, new_password: $('pwNew').value });
     ['pwCurrent','pwNew'].forEach(id => $(id).value = '');
     hidePasswords();
+    $('pwSec').open = false;
     toast('🔑 Password changed');
   } catch (e) { toast('⚠️ ' + e.message, true); }
 }
@@ -773,6 +814,7 @@ function renderStationsAdmin() {
           <button class="btn btn-r btn-sm" onclick="removeStation(this.dataset.name)" data-name="${esc(n)}">Remove</button>
         </span></div>`).join('')
     : '<div class="m-sub" style="margin:0">No branches yet — add the first one below.</div>';
+  $('stSum').textContent = STATIONS.length ? `${STATIONS.length} branch${STATIONS.length === 1 ? '' : 'es'}: ${STATIONS.join(', ')}` : 'No branches yet — add one';
   if (RENAMING && $('rsName')) { $('rsName').focus(); $('rsName').select(); }
 }
 
@@ -837,6 +879,8 @@ async function loadUsers() {
 
 function renderUsers() {
   const list = $('usersList');
+  const n = r => USERS.filter(u => u.role === r).length;
+  $('usSum').textContent = `${USERS.length} user${USERS.length === 1 ? '' : 's'} · ${n('admin')} admin · ${n('manager')} manager · ${n('staff')} staff`;
   {
     const users = USERS;
     list.innerHTML = users.map(u => u.id === EDITING_CONTACT ? `
@@ -878,6 +922,7 @@ async function addUser() {
     });
     toast('✅ User ' + sv('nuName') + ' added');
     ['nuName','nuPass','nuFullName','nuEmail','nuPhone'].forEach(id => $(id).value = '');
+    showAddUser(false);
     hidePasswords();
     loadUsers();
   } catch (e) { toast('⚠️ ' + e.message, true); }
@@ -1449,6 +1494,8 @@ async function loadAlertSettings() {
     const { settings, email_configured } = await api('GET', '/settings');
     Object.entries(ALERT_FIELDS).forEach(([id, key]) => { $(id).value = settings[key]; });
     $('asEmails').value = settings.alert_emails || '';
+    $('asSum').textContent = !email_configured ? 'In the app only — email not set up on the server'
+      : settings.alert_emails ? 'In the app and by email to ' + settings.alert_emails : 'In the app only — add an email address';
     $('asEmailState').textContent = email_configured
       ? '✉️ Email sending is set up on the server.'
       : '✉️ Email sending is not set up on the server yet — alerts still show in the app (see README: PK_SMTP_*).';
@@ -1475,12 +1522,15 @@ async function testAlertEmail() {
 const fmtWhen = iso => new Date(iso).toLocaleString(LOCALE, { timeZone: 'Africa/Nairobi', day: 'numeric', month: 'short',
   hour: '2-digit', minute: '2-digit' });
 
+let BK_SHOW_ALL = false;   // the backups list shows the latest 3 until asked for all
+
 async function loadBackups() {
   let res;
   try { res = await api('GET', '/backups'); }
   catch (e) { $('bkState').textContent = ONLINE ? e.message : 'Backups need an internet connection.'; return; }
   $('bkEmails').value = res.backup_emails || '';
   const newest = res.backups[0];
+  $('bkSum').textContent = newest ? 'Last backup: ' + fmtWhen(newest.at) + (res.backup_emails ? ' · emailed' : '') : 'No backup yet';
   const last = res.last_email;
   $('bkState').innerHTML = [
     newest ? `✅ Last backup: ${esc(fmtWhen(newest.at))}. A new one is made every night; the latest 14 are kept on the server.`
@@ -1492,11 +1542,14 @@ async function loadBackups() {
       : '✉️ Each night\'s backup is emailed to the addresses below.',
   ].map(line => `<div>${line}</div>`).join('');
   // Each backup: a PDF anyone can open and read, and the .zip the app restores from
-  $('bkList').innerHTML = res.backups.map(b => `<div class="m-row" style="flex-wrap:wrap;gap:6px"><span>${esc(fmtWhen(b.at))} · ${fmt(b.size / 1024)} KB</span>
+  const shown = BK_SHOW_ALL ? res.backups : res.backups.slice(0, 3);
+  $('bkList').innerHTML = shown.map(b => `<div class="m-row" style="flex-wrap:wrap;gap:6px"><span>${esc(fmtWhen(b.at))} · ${fmt(b.size / 1024)} KB</span>
     <span style="display:flex;gap:6px;flex-wrap:wrap">
       <a class="btn btn-g btn-sm" href="/api/backups/${encodeURIComponent(b.name.replace(/\.zip$/, '.pdf'))}" download>📄 PDF</a>
       <a class="btn btn-o btn-sm" href="/api/backups/${encodeURIComponent(b.name)}" download title="The file the app restores from — not meant to be opened">⬇️ Restore file</a>
-    </span></div>`).join('') + (res.backups.length
+    </span></div>`).join('') + (res.backups.length > shown.length
+      ? `<div class="lang-switch" style="justify-content:flex-start;margin-top:6px"><button type="button" onclick="BK_SHOW_ALL=true;loadBackups()">Show all ${res.backups.length} backups</button></div>` : '')
+    + (res.backups.length
       ? '<div class="m-sub" style="margin:8px 0 0">📄 PDF: open and read on any phone or computer. ⬇️ Restore file: keep it safe — it puts the app back as it was; it isn\'t meant to be opened.</div>' : '');
 }
 
