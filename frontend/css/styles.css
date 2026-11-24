@@ -401,3 +401,27 @@ body.no-profit .pbox-4 .pbox-item+.pbox-item{border-left:1px solid var(--brd);bo
 
 /* Staff never delete saved days */
 body.is-staff .no-staff{display:none!important}
+
+/* ════ ACCOUNT PAGE: short, with sections that fold away ════ */
+.acct-modal{max-width:640px}
+.acct-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}
+.lang-mini{display:flex;align-items:center;gap:4px;font-size:.8rem;flex-shrink:0}
+.lang-mini button{background:none;border:1px solid var(--brd);color:var(--mut);font-family:var(--mono);font-size:.7rem;
+  padding:4px 8px;cursor:pointer}
+.lang-mini button:first-of-type{border-radius:6px 0 0 6px}
+.lang-mini button:last-of-type{border-radius:0 6px 6px 0;border-left:none}
+.lang-mini button.on{background:var(--acc);border-color:var(--acc);color:#061006;font-weight:600}
+.acct-group{margin:16px 0 6px;font-family:var(--mono);font-size:.66rem;letter-spacing:2px;text-transform:uppercase;color:var(--acc2)}
+.acct-sec{border:1px solid var(--brd);border-radius:10px;margin-bottom:8px;background:rgba(255,255,255,.015)}
+.acct-sec[open]{border-color:rgba(62,207,50,.35)}
+.acct-sec summary{list-style:none;display:flex;align-items:center;gap:12px;padding:13px 14px;cursor:pointer;user-select:none}
+.acct-sec summary::-webkit-details-marker{display:none}
+.acct-sec summary::after{content:'›';margin-left:auto;font-size:1.3rem;color:var(--mut);transition:transform .15s}
+.acct-sec[open] summary::after{transform:rotate(90deg)}
+.acct-ico{font-size:1.25rem;width:28px;text-align:center;flex-shrink:0}
+.acct-ttl{display:flex;flex-direction:column;gap:2px;font-family:'Syne',sans-serif;font-weight:700;font-size:1.02rem;color:var(--txt);min-width:0}
+.acct-ttl small{font-family:var(--mono);font-weight:400;font-size:.68rem;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.acct-body{padding:2px 14px 14px;border-top:1px solid var(--brd)}
+.acct-body > :first-child{margin-top:12px}
+.add-row{display:flex;gap:8px;margin-top:12px;align-items:center}
+.add-row input{flex:1;min-width:0}
