@@ -868,10 +868,12 @@ class Mpesa:
         amount = int(num(amount))
         if amount < 1 or amount > 70000:
             raise Error(HTTPStatus.BAD_REQUEST, "Choose an amount between 1 and 70,000")
+        # Safaricom only accepts a short account reference of letters and numbers ("The element
+        # AccountReference is invalid" otherwise); a till has no account reference at all
         return self._call("POST", "/mpesa/c2b/v1/simulate", {
             "ShortCode": b["shortcode"], "Amount": amount, "Msisdn": "254708374149",
             "CommandID": "CustomerPayBillOnline" if b["type"] == "paybill" else "CustomerBuyGoodsOnline",
-            "BillRefNumber": "PetroKenya test" if b["type"] == "paybill" else ""})
+            "BillRefNumber": "PKTEST" if b["type"] == "paybill" else None})
 
 
 # ── Backups ───────────────────────────────────────────────────────────────────
