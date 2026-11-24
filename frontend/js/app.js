@@ -314,6 +314,8 @@ const seesProfit = () => !!USER && USER.role !== 'staff';
 
 function applyUserToUI() {
   document.body.classList.toggle('no-profit', !seesProfit());
+  // Pump staff can't move days to the bin (the server refuses too), so they get no delete buttons
+  document.body.classList.toggle('is-staff', !!USER && USER.role === 'staff');
   const isAdmin = USER && USER.role === 'admin';
   const fixed = USER && (USER.role === 'staff' || USER.role === 'manager') && USER.station;
   $('userBtn').textContent = '👤 ' + (USER ? displayName(USER) : 'Sign in');
@@ -1489,8 +1491,13 @@ async function loadBackups() {
                         : `⚠️ The last backup email failed: ${esc(last.error || 'unknown error')}`)
       : '✉️ Each night\'s backup is emailed to the addresses below.',
   ].map(line => `<div>${line}</div>`).join('');
-  $('bkList').innerHTML = res.backups.map(b => `<div class="m-row"><span>${esc(fmtWhen(b.at))} · ${fmt(b.size / 1024)} KB</span>
-    <a class="btn btn-o btn-sm" href="/api/backups/${encodeURIComponent(b.name)}" download>⬇️ Download</a></div>`).join('');
+  // Each backup: a PDF anyone can open and read, and the .zip the app restores from
+  $('bkList').innerHTML = res.backups.map(b => `<div class="m-row" style="flex-wrap:wrap;gap:6px"><span>${esc(fmtWhen(b.at))} · ${fmt(b.size / 1024)} KB</span>
+    <span style="display:flex;gap:6px;flex-wrap:wrap">
+      <a class="btn btn-g btn-sm" href="/api/backups/${encodeURIComponent(b.name.replace(/\.zip$/, '.pdf'))}" download>📄 PDF</a>
+      <a class="btn btn-o btn-sm" href="/api/backups/${encodeURIComponent(b.name)}" download title="The file the app restores from — not meant to be opened">⬇️ Restore file</a>
+    </span></div>`).join('') + (res.backups.length
+      ? '<div class="m-sub" style="margin:8px 0 0">📄 PDF: open and read on any phone or computer. ⬇️ Restore file: keep it safe — it puts the app back as it was; it isn\'t meant to be opened.</div>' : '');
 }
 
 async function saveBackupEmails() {
@@ -1504,8 +1511,9 @@ async function backupNow() {
     toast('✅ Backup made — ' + backup.name);
     await loadBackups();
     if (window.pkPreview) return;                            // the website preview has no files to hand out
-    const link = document.createElement('a');                // and hand the owner a copy
-    link.href = '/api/backups/' + encodeURIComponent(backup.name); link.download = backup.name;
+    const pdfName = backup.name.replace(/\.zip$/, '.pdf');       // and hand the owner a copy to read
+    const link = document.createElement('a');
+    link.href = '/api/backups/' + encodeURIComponent(pdfName); link.download = pdfName;
     document.body.appendChild(link); link.click(); link.remove();
   } catch (e) { toast('⚠️ ' + e.message, true); }
 }
@@ -2388,7 +2396,7 @@ function loadRecs() {
         <td>KES ${fmt(vat)}</td>
         <td style="color:var(--acc2)">KES ${fmt(tax)}</td>
         <td>${r.approved_at ? '<span class="badge bg">✅ Approved</span>' : '<span class="badge by">Open</span>'}${(r.opening_mismatches || []).length ? ' <span class="badge br" title="Openings differ from the previous day">⚠️</span>' : ''}</td>
-        <td>
+        <td class="no-staff">
           <button class="btn btn-r btn-xs" data-id="${safeId}"
             onclick="event.stopPropagation();delRec(this)">✕</button>
         </td>

@@ -20,6 +20,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+
+import pdf
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from http import HTTPStatus
@@ -138,7 +140,8 @@ class Mailer:
         msg["Subject"] = subject
         msg.set_content(body)
         for filename, data in attachments:
-            msg.add_attachment(data, maintype="application", subtype="zip", filename=filename)
+            subtype = "pdf" if filename.lower().endswith(".pdf") else "zip"
+            msg.add_attachment(data, maintype="application", subtype=subtype, filename=filename)
         if self.port == 465:
             server = smtplib.SMTP_SSL(self.host, self.port, timeout=20)
         else:
@@ -876,6 +879,55 @@ class Mpesa:
             "BillRefNumber": "PKTEST" if b["type"] == "paybill" else None})
 
 
+# ── The readable side of a backup: a PDF of every saved day ────────────────────
+def backup_report_pdf(db_file, made_at, photos=0):
+    """A PDF anyone can open, from a backup's database: every saved day per branch with
+    branch totals, and the users. (Restoring uses the backup's .zip, not this.)"""
+    conn = sqlite3.connect(db_file)
+    conn.row_factory = sqlite3.Row
+    try:
+        records = [json.loads(r["data"]) for r in conn.execute(
+            "SELECT data FROM records WHERE deleted_at IS NULL ORDER BY station, report_date")]
+        users = conn.execute("SELECT username, full_name, role, station FROM users ORDER BY role, username").fetchall()
+    finally:
+        conn.close()
+    money = lambda v: "{:,.0f}".format(num(v))
+    litres = lambda v: "{:,.0f}".format(num(v))
+    doc = pdf.Document("PetroKenya backup report - %s" % made_at)
+    doc.heading("PetroKenya - Backup Report", 18)
+    doc.text("Made %s.  %d saved day%s across %d branch%s, %d user%s, %d receipt photo%s." % (
+        made_at, len(records), "" if len(records) == 1 else "s",
+        len({r["station"] for r in records}), "" if len({r["station"] for r in records}) == 1 else "es",
+        len(users), "" if len(users) == 1 else "s", photos, "" if photos == 1 else "s"))
+    doc.text("This PDF is for reading and printing. To put the data back into the app, use the backup's "
+             ".zip file (python3 backend/server.py restore FILE.zip).", 8.5, grey=True)
+    cols = [("Date", 10, "l"), ("Petrol L", 9, "r"), ("Diesel L", 9, "r"), ("Kero L", 8, "r"),
+            ("Sales KES", 12, "r"), ("M-Pesa", 11, "r"), ("Cash", 11, "r"), ("Credit", 10, "r"),
+            ("Expenses", 10, "r"), ("Profit", 11, "r"), ("Status", 9, "l"), ("Saved by", 16, "l")]
+    keys = ["petrol_litres", "diesel_litres", "kero_litres", "gross_revenue", "mpesa_amount", "cash_amount",
+            "credit_amount", "total_expenses", "net_profit"]
+    by_station = {}
+    for r in records:
+        by_station.setdefault(r["station"], []).append(r)
+    if not records:
+        doc.space(10)
+        doc.text("No days have been saved yet.", 10)
+    for station, days in by_station.items():
+        doc.space(8)
+        doc.heading(station, 12)
+        rows = [[d.get("report_date", "")] +
+                [(litres if i < 3 else money)(d.get(k)) for i, k in enumerate(keys)] +
+                ["Approved" if d.get("approved_at") else "Open", d.get("operator") or ""] for d in days]
+        totals = ["Total"] + [(litres if i < 3 else money)(sum(num(d.get(k)) for d in days))
+                              for i, k in enumerate(keys)] + ["%d day%s" % (len(days), "" if len(days) == 1 else "s"), ""]
+        doc.table(cols, rows, totals)
+    doc.space(10)
+    doc.heading("Users", 12)
+    doc.table([("Username", 20, "l"), ("Name", 30, "l"), ("Role", 10, "l"), ("Branch", 30, "l")],
+              [[u["username"], u["full_name"] or "", u["role"], u["station"] or "All branches"] for u in users])
+    return doc.render()
+
+
 # ── Backups ───────────────────────────────────────────────────────────────────
 BACKUP_KEEP = 14                       # copies kept on the server
 BACKUP_EVERY = timedelta(hours=24)
@@ -920,9 +972,30 @@ class Backups:
         return out
 
     def path(self, name):
-        if not BACKUP_NAME_RE.match(name or "") or not os.path.isfile(os.path.join(self.folder, name)):
+        """A backup's .zip (for restoring) or its .pdf (for reading). Backups made before PDFs
+        existed get theirs made from the zip the first time it's asked for."""
+        name = name or ""
+        if name.endswith(".pdf"):
+            zip_name = name[:-4] + ".zip"
+            zip_path = self.path(zip_name)
+            pdf_path = os.path.join(self.folder, name)
+            if not os.path.isfile(pdf_path):
+                with self.lock, tempfile.TemporaryDirectory() as tmp, zipfile.ZipFile(zip_path) as z:
+                    z.extract(DB_IN_ZIP, tmp)
+                    info = json.loads(z.read("backup-info.json")) if "backup-info.json" in z.namelist() else {}
+                    self._write_pdf(os.path.join(tmp, DB_IN_ZIP), pdf_path,
+                                    info.get("made_at", "")[:16].replace("T", " "), info.get("photos", 0))
+            return pdf_path
+        if not BACKUP_NAME_RE.match(name) or not os.path.isfile(os.path.join(self.folder, name)):
             raise Error(HTTPStatus.NOT_FOUND, "Backup not found")
         return os.path.join(self.folder, name)
+
+    @staticmethod
+    def _write_pdf(db, pdf_path, made_at, photos):
+        data = backup_report_pdf(db, made_at, photos)
+        with open(pdf_path + ".part", "wb") as f:
+            f.write(data)
+        os.replace(pdf_path + ".part", pdf_path)
 
     def _db_snapshot(self, tmpdir):
         db = os.path.join(tmpdir, DB_IN_ZIP)
@@ -950,12 +1023,18 @@ class Backups:
                     {"made_at": datetime.now(KENYA).isoformat(timespec="seconds"), "by": by,
                      "photos": len(photos)}, indent=1))
             os.replace(part, os.path.join(self.folder, name))
+            # The readable copy of the same moment
+            self._write_pdf(db, os.path.join(self.folder, name[:-4] + ".pdf"),
+                            datetime.now(KENYA).strftime("%Y-%m-%d %H:%M"), len(photos))
         for old in self.list()[BACKUP_KEEP:]:
             os.remove(os.path.join(self.folder, old["name"]))
+            if os.path.exists(os.path.join(self.folder, old["name"][:-4] + ".pdf")):
+                os.remove(os.path.join(self.folder, old["name"][:-4] + ".pdf"))
         return next(b for b in self.list() if b["name"] == name)
 
     def email(self):
-        """Email a database-only copy to the backup addresses. Returns where it went."""
+        """Email the backup to the backup addresses: a PDF to read, and the database (zip) to
+        restore from. Returns where it went."""
         to = [e.strip() for e in self.settings.all()["backup_emails"].split(",") if e.strip()]
         if not self.mailer.configured:
             raise Error(HTTPStatus.BAD_REQUEST, "Email isn't set up on the server (PK_SMTP_HOST and friends)")
@@ -969,18 +1048,26 @@ class Backups:
                 z.write(db, DB_IN_ZIP)
             with open(buf, "rb") as f:
                 data = f.read()
+            photos = len([f for f in os.listdir(self.uploads_dir) if UPLOAD_NAME_RE.match(f)]) \
+                if os.path.isdir(self.uploads_dir) else 0
+            report = backup_report_pdf(db, datetime.now(KENYA).strftime("%Y-%m-%d %H:%M"), photos)
         self.last_email = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
                            "to": to, "ok": False, "error": None}
-        if len(data) > BACKUP_EMAIL_LIMIT:
+        if len(data) + len(report) > BACKUP_EMAIL_LIMIT:
             self.last_email["error"] = "The database is too big to email — download backups instead"
             raise Error(HTTPStatus.BAD_REQUEST, self.last_email["error"])
         try:
             self.mailer.send_now(
                 to, "PetroKenya backup %s" % day,
-                "Attached is the PetroKenya database as of %s (receipt photos are not included).\n\n"
-                "Keep this email: to restore, stop the app and run\n"
-                "    python3 backend/server.py restore petrokenya-db-%s.zip\n" % (day, day),
-                [("petrokenya-db-%s.zip" % day, data)])
+                "Attached is the PetroKenya backup as of %s:\n\n"
+                "  - petrokenya-report-%s.pdf: every saved day per branch, to open and read on any phone\n"
+                "    or computer.\n"
+                "  - petrokenya-db-%s.zip: the database itself, to put the app back as it was. It isn't\n"
+                "    meant to be opened; to restore, stop the app and run\n"
+                "        python3 backend/server.py restore petrokenya-db-%s.zip\n\n"
+                "Receipt photos are not included (download a full backup from the app for those).\n"
+                % (day, day, day, day),
+                [("petrokenya-report-%s.pdf" % day, report), ("petrokenya-db-%s.zip" % day, data)])
         except Exception as e:
             self.last_email["error"] = explain_mail_error(e)[:300]
             raise Error(HTTPStatus.BAD_GATEWAY, self.last_email["error"])

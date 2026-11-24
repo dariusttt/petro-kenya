@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PetroKenya">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/styles.css?v=19">
+<link rel="stylesheet" href="css/styles.css?v=20">
 </head>
 <body>
 
@@ -832,7 +832,7 @@
           <th>#</th><th>Date</th><th>Station</th><th>Operator</th>
           <th>P-Litres</th><th>D-Litres</th><th>Total L</th>
           <th>Sales KES</th><th>M-Pesa</th><th>Cash</th>
-          <th>Expenses</th><th class="priv">Profit</th><th>VAT</th><th>Tax Total</th><th>Status</th><th>Del</th>
+          <th>Expenses</th><th class="priv">Profit</th><th>VAT</th><th>Tax Total</th><th>Status</th><th class="no-staff">Del</th>
         </tr></thead>
         <tbody id="recBody">
           <tr><td colspan="15" style="text-align:center;padding:32px;color:var(--mut);font-family:var(--mono);font-size:.76rem">No records yet — save a daily entry first.</td></tr>
@@ -1009,7 +1009,7 @@
       <button class="btn btn-y" onclick="window.print()">🖨️ Print</button>
       <button class="btn btn-b" id="rdApproveBtn" onclick="approveDetail(true)" hidden>✅ Approve Day</button>
       <button class="btn btn-o" id="rdReopenBtn" onclick="approveDetail(false)" hidden>🔓 Reopen Day</button>
-      <button class="btn btn-r" id="rdDeleteBtn" onclick="deleteFromDetail()">🗑️ Move to Bin</button>
+      <button class="btn btn-r no-staff" id="rdDeleteBtn" onclick="deleteFromDetail()">🗑️ Move to Bin</button>
     </div>
   </div>
 </div>
@@ -1278,7 +1278,7 @@
 
 <div id="toast"></div>
 
-<script src="js/i18n.js?v=19"></script>
-<script src="js/app.js?v=19"></script>
+<script src="js/i18n.js?v=20"></script>
+<script src="js/app.js?v=20"></script>
 </body>
 </html>

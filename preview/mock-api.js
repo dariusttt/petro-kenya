@@ -547,6 +547,7 @@
       if (method === 'GET') return r;
       if (method === 'PUT') return saveRecord(db, body, pu, r.id);
       if (method === 'DELETE') {
+        if (pu.role === 'staff') fail(403, 'Only a branch manager or admin can move a day to the bin');
         checkEditable(pu, r.report_date, r);
         r.deleted_at = nowIso(); r.deleted_by = pu.username; version(db, r, 'delete', pu.username); clearAlerts(db, r.id);
         return { deleted: 1 };

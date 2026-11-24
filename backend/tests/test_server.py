@@ -285,7 +285,8 @@ class ServerTest(ServerCase):
         self.assertEqual(status, 201)
         self.assertEqual(staff.req("GET", "/api/records")[1]["count"], 1)
         self.assertEqual(staff.req("GET", "/api/stations")[1]["stations"], ["Moiben Branch"])
-        self.assertEqual(staff.req("DELETE", "/api/records/%d" % res["record"]["id"])[0], 200)
+        self.assertEqual(staff.req("DELETE", "/api/records/%d" % res["record"]["id"])[0], 403)   # staff never delete
+        self.assertEqual(staff.req("GET", "/api/records")[1]["count"], 1)
         self.assertEqual(staff.req("DELETE", "/api/records")[0], 403)
         self.assertEqual(staff.req("GET", "/api/users")[0], 403)
 
@@ -385,11 +386,12 @@ class SecurityTest(ServerCase):
     def test_delete_moves_to_bin_and_admin_can_restore_or_purge(self):
         rid = self.admin.req("POST", "/api/records", SAMPLE)[1]["record"]["id"]
         roamer = Client(self.base).login("roamer")
-        self.assertEqual(roamer.req("DELETE", "/api/records/%d" % rid)[0], 200)
+        self.assertEqual(roamer.req("DELETE", "/api/records/%d" % rid)[0], 403)        # staff can't
+        self.assertEqual(self.admin.req("DELETE", "/api/records/%d" % rid)[0], 200)
         self.assertEqual(self.admin.req("GET", "/api/records")[1]["count"], 0)
         self.assertEqual(roamer.req("GET", "/api/bin")[0], 403)
         binned = self.admin.req("GET", "/api/bin")[1]["records"]
-        self.assertEqual([(r["id"], r["deleted_by"]) for r in binned], [(rid, "roamer")])
+        self.assertEqual([(r["id"], r["deleted_by"]) for r in binned], [(rid, "boss")])
 
         self.assertEqual(self.admin.req("POST", "/api/bin/%d/restore" % rid, {})[0], 200)
         self.assertEqual(self.admin.req("GET", "/api/records")[1]["count"], 1)
@@ -499,7 +501,8 @@ class WorkflowTest(ServerCase):
         self.assertEqual(mgr.req("POST", "/api/records/%d/approve" % rid, {})[0], 409)
         for client in (staff, mgr, self.admin):                                         # nobody edits it
             self.assertEqual(client.req("POST", "/api/records", {**self.KISUMU, "cash_amount": 1})[0], 409)
-        self.assertEqual(staff.req("DELETE", "/api/records/%d" % rid)[0], 409)
+        self.assertEqual(staff.req("DELETE", "/api/records/%d" % rid)[0], 403)
+        self.assertEqual(mgr.req("DELETE", "/api/records/%d" % rid)[0], 409)
         self.assertEqual(mgr.req("POST", "/api/records/%d/reopen" % rid, {})[0], 403)
         self.assertEqual(self.admin.req("POST", "/api/records/%d/reopen" % rid, {})[0], 200)
         self.assertEqual(staff.req("POST", "/api/records", {**self.KISUMU, "cash_amount": 1})[0], 200)
@@ -768,8 +771,9 @@ class BackupTest(ServerCase):
     def setUp(self):
         super().setUp()
         self.backups = self.httpd.RequestHandlerClass.backups
-        for b in self.backups.list():
-            os.remove(os.path.join(self.backups.folder, b["name"]))
+        for f in os.listdir(self.backups.folder):
+            if f.startswith("petrokenya-backup-"):
+                os.remove(os.path.join(self.backups.folder, f))
 
     def test_only_admins_back_up_and_download(self):
         import io
@@ -789,11 +793,23 @@ class BackupTest(ServerCase):
         self.assertEqual(r.headers["Content-Type"], "application/zip")
         with zipfile.ZipFile(io.BytesIO(r.read())) as z:
             self.assertIn("petrokenya.sqlite3", z.namelist())
+        # …and a PDF of the same backup, to read
+        pdf_name = name[:-4] + ".pdf"
+        r = self.admin.opener.open(self.base + "/api/backups/" + pdf_name)
+        body = r.read()
+        self.assertEqual(r.headers["Content-Type"], "application/pdf")
+        self.assertTrue(body.startswith(b"%PDF-") and body.rstrip().endswith(b"%%EOF"))
+        self.assertEqual(staff.req("GET", "/api/backups/" + pdf_name)[0], 403)
+        self.assertEqual(self.admin.req("GET", "/api/backups/../x.pdf")[0], 404)
+        # a backup made before PDFs existed gets its PDF made on request
+        os.remove(os.path.join(self.backups.folder, pdf_name))
+        self.assertTrue(self.admin.opener.open(self.base + "/api/backups/" + pdf_name).read().startswith(b"%PDF-"))
 
     def test_only_the_latest_fourteen_are_kept_and_the_schedule_waits_a_day(self):
         for _ in range(16):
             self.backups.create()
         self.assertEqual(len(self.backups.list()), 14)
+        self.assertEqual(len([f for f in os.listdir(self.backups.folder) if f.endswith(".pdf")]), 14)   # pruned too
         self.assertFalse(self.backups.due())
         self.assertFalse(self.backups.run_due())
         old = (datetime.now() - timedelta(hours=25)).timestamp()
@@ -812,7 +828,8 @@ class BackupTest(ServerCase):
             self.admin.req("PUT", "/api/settings", {"backup_emails": "owner@example.com"})
             status, res, _ = self.admin.req("POST", "/api/backups/email", {})
             self.assertEqual((status, res["sent_to"]), (200, ["owner@example.com"]))
-            filename, data = handler.backups.mailer.attachments[0]
+            (pdf_file, pdf_data), (filename, data) = handler.backups.mailer.attachments
+            self.assertTrue(pdf_file.startswith("petrokenya-report-") and pdf_data.startswith(b"%PDF-"))
             self.assertTrue(filename.startswith("petrokenya-db-"))
             with zipfile.ZipFile(io.BytesIO(data)) as z:
                 self.assertEqual(z.namelist(), ["petrokenya.sqlite3"])
