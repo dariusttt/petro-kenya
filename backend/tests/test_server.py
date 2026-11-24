@@ -1183,6 +1183,7 @@ class MpesaTest(ServerCase):
             sim = [c for c in calls if c[0] == "POST"][-1]
             self.assertEqual((status, sim[1], sim[3]["CommandID"], sim[3]["Amount"]),
                              (200, "/mpesa/c2b/v1/simulate", "CustomerPayBillOnline", 150))
+            self.assertRegex(sim[3]["BillRefNumber"], r"^[A-Za-z0-9]{1,12}$")   # Safaricom's rule
             self.assertEqual(len([c for c in calls if c[0] == "GET"]), 1)          # token reused
         finally:
             os.environ.pop("PK_PUBLIC_URL", None)
