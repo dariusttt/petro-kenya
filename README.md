@@ -101,7 +101,10 @@ are kept and join that branch as soon as its number is entered.
 - **Off the server:** add addresses under **👤 → 💾 Backups**, and each night's database is
   also emailed there (photos are left out to keep the email small). This copy survives even
   if the server or its disk is lost. Needs the `PK_SMTP_*` mail settings.
-- **On demand:** **⬇️ Back Up Now** makes a backup and downloads it; earlier ones can be
+- **Two files per backup:** a **📄 PDF** anyone can open and read (every saved day per branch, with
+  branch totals and the users), and the **⬇️ Restore file** (.zip) the app is restored from, which
+  isn't meant to be opened. The backup email carries both.
+- **On demand:** **⬇️ Back Up Now** makes a backup and downloads its PDF; earlier ones can be
   downloaded from the list. **✉️ Email a Backup Now** sends one straight away.
 - From a terminal: `python3 backend/server.py backup`.
 
@@ -142,7 +145,8 @@ replaces what's there now.
   history: who changed what, from what to what, and when.
 - Deleting moves a record to the **🗑️ Bin** (Records page). Only admins can restore it
   or delete it for good; its history is kept even then.
-- Staff can only change today's and yesterday's records; older days are locked.
+- Staff can only change today's and yesterday's records; older days are locked. Only branch
+  managers and admins can move a day to the bin, so staff see no delete buttons.
 - Staff never see cost prices, margins or profit — not on screen, in reports or downloads, nor in what the
   server sends them. When they save a day the cost prices come from the owner's prices (or the day before).
   Nobody can save a future date.

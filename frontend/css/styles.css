@@ -398,3 +398,6 @@ body.no-profit .pbox-4 .pbox-item+.pbox-item{border-left:1px solid var(--brd);bo
 .mp-received details{margin-top:8px}
 .mp-received summary{cursor:pointer;color:var(--mut)}
 .mp-received .m-row{font-size:.72rem}
+
+/* Staff never delete saved days */
+body.is-staff .no-staff{display:none!important}

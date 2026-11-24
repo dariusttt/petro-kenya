@@ -192,7 +192,9 @@ const SW = {
   // ── Record details ──
   'Fuel Sales': 'Mauzo ya Mafuta',
   'Pump Sales Meter Cross-Check': 'Ukaguzi wa Mita ya Mauzo', 'Branches (Admin)': 'Matawi (Msimamizi)', 'New branch name': 'Jina la tawi jipya',
-  'Add Branch': 'Ongeza Tawi', 'Show each payment': 'Onyesha kila malipo', 'Use this total': 'Tumia jumla hii',
+  'Add Branch': 'Ongeza Tawi', 'Restore file': 'Faili la kurejesha',
+  "PDF: open and read on any phone or computer. ⬇️ Restore file: keep it safe — it puts the app back as it was; it isn't meant to be opened.":
+    'PDF: fungua na usome kwenye simu au kompyuta yoyote. ⬇️ Faili la kurejesha: litunze salama — hurudisha programu kama ilivyokuwa; si la kufunguliwa.', 'Show each payment': 'Onyesha kila malipo', 'Use this total': 'Tumia jumla hii',
   'Matches the amount above': 'Inalingana na kiasi kilicho juu', 'Connect to Safaricom': 'Unganisha na Safaricom',
   'Test payment': 'Malipo ya majaribio', 'Till (Buy Goods)': 'Till (Nunua Bidhaa)', 'Paybill': 'Paybill',
   '(not connected yet)': '(bado haijaunganishwa)', 'Reported by Safaricom': 'Iliyoripotiwa na Safaricom',

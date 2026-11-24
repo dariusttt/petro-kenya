@@ -46,7 +46,7 @@ API (all JSON; everything except /api/health and /api/login needs a signed-in se
     GET|PUT /api/settings   POST /api/settings/test-email   (admin)
     GET    /api/reports/monthly?month=YYYY-MM&station=   (.csv for a download)
     POST   /api/uploads {data: base64 photo, station}   GET /api/uploads/<id>
-    GET|POST /api/backups   POST /api/backups/email   GET /api/backups/<name>   (admin)
+    GET|POST /api/backups   POST /api/backups/email   GET /api/backups/<name>.zip|.pdf   (admin)
     GET    /api/analytics?station=       GET /api/export.csv?station=
     GET|POST /api/users   DELETE /api/users/<id>   POST /api/users/<id>/password   (admin)
 
@@ -1565,6 +1565,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(HTTPStatus.OK, {"created": False, "record": saved})
             if m == "DELETE":
                 existing = self._own_record(user, rec_id)
+                if user["role"] == "staff":
+                    raise ApiError(HTTPStatus.FORBIDDEN, "Only a branch manager or admin can move a day to the bin")
                 self._check_editable(user, existing["report_date"], existing)
                 self.store.delete(rec_id, by=user["username"])
                 self.alerts.clear_record(rec_id, now_iso())
@@ -1745,8 +1747,9 @@ class Handler(BaseHTTPRequestHandler):
             full = self.backups.path(mm.group(1))
             with open(full, "rb") as f:
                 data = f.read()
-            return self._send(HTTPStatus.OK, data, "application/zip",
-                              {"Content-Disposition": 'attachment; filename="%s"' % mm.group(1)})
+            kind = "application/pdf" if full.endswith(".pdf") else "application/zip"
+            return self._send(HTTPStatus.OK, data, kind,
+                              {"Content-Disposition": 'attachment; filename="%s"' % os.path.basename(full)})
 
         # ── Monthly report ──
         if path in ("/api/reports/monthly", "/api/reports/monthly.csv") and m == "GET":
