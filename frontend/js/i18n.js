@@ -192,7 +192,11 @@ const SW = {
   // ── Record details ──
   'Fuel Sales': 'Mauzo ya Mafuta',
   'Pump Sales Meter Cross-Check': 'Ukaguzi wa Mita ya Mauzo', 'Branches (Admin)': 'Matawi (Msimamizi)', 'New branch name': 'Jina la tawi jipya',
-  'Add Branch': 'Ongeza Tawi', 'My Details': 'Maelezo Yangu', 'Name, email and phone': 'Jina, barua pepe na simu',
+  'Add Branch': 'Ongeza Tawi', 'Returned to Tank (RTT)': 'Yaliyorudishwa Tankini (RTT)', 'Reason for RTT': 'Sababu ya RTT',
+  'RTT — returned to tank (L), if any': 'RTT — yaliyorudishwa tankini (L), kama yapo',
+  'A pump returns more than (L) to tank': 'Pampu inarudisha zaidi ya (L) tankini',
+  "These litres went through the meters for a pump test or calibration and were poured back, so they aren't counted as sold. Say why — large amounts raise an alert.":
+    'Lita hizi zilipita kwenye mita wakati wa majaribio au upimaji wa pampu na zikarudishwa, kwa hiyo hazihesabiwi kama zilizouzwa. Eleza sababu — kiasi kikubwa huleta tahadhari.', 'My Details': 'Maelezo Yangu', 'Name, email and phone': 'Jina, barua pepe na simu',
   'Password & Security': 'Nenosiri na Usalama', 'Change your password, sign out other phones': 'Badilisha nenosiri, toka kwenye simu nyingine',
   'Change Password': 'Badilisha Nenosiri', 'Sign Out Other Devices': 'Toka Kwenye Vifaa Vingine', 'Save My Details': 'Hifadhi Maelezo Yangu',
   'Your details are saved': 'Maelezo yako yamehifadhiwa', 'Branches': 'Matawi', 'Users': 'Watumiaji', 'Alert Settings': 'Mipangilio ya Tahadhari',
@@ -305,6 +309,7 @@ const SW_PATTERNS = [
   [/^Margin: (.+)$/, 'Kiwango cha faida: $1'],
   [/^Branch added — (.+)$/, 'Tawi limeongezwa — $1'],
   [/^Branch removed — (.+)$/, 'Tawi limeondolewa — $1'],
+  [/^([\d.,]+) L returned$/, 'Lita $1 zimerudishwa'],
   [/^(\d+) branch(?:es)?: (.+)$/, 'Matawi $1: $2'],
   [/^(\d+) users? · (\d+) admin · (\d+) manager · (\d+) staff$/, 'Watumiaji $1 · msimamizi $2 · meneja $3 · wafanyakazi $4'],
   [/^Last backup: (.+?)( · emailed)?$/, (m, w, e) => 'Nakala ya mwisho: ' + w + (e ? ' · imetumwa kwa barua pepe' : '')],

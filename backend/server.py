@@ -119,9 +119,12 @@ PUMPS = [("p1", "petrol"), ("p2", "petrol"), ("p3", "petrol"),
          ("k1", "kero")]
 PUMP_READINGS = ("open", "close", "sales_open", "sales_close")
 PUMP_FIELDS = ["pump_%s_%s" % (pid, x) for pid, _ in PUMPS for x in PUMP_READINGS]
+# RTT (return to tank): litres pumped for a test or a Weights & Measures calibration and poured
+# back. The meters count them, but they weren't sold and they're back in the tank.
+PUMP_RTT_FIELDS = ["pump_%s_rtt" % pid for pid, _ in PUMPS]
 
 # Raw numeric inputs accepted from clients
-NUM_FIELDS = PUMP_FIELDS + [
+NUM_FIELDS = PUMP_FIELDS + PUMP_RTT_FIELDS + [
     "petrol_open", "petrol_close", "petrol_price", "petrol_cost",
     "petrol_sales_open", "petrol_sales_close",
     "diesel_open", "diesel_close", "diesel_price", "diesel_cost",
@@ -138,7 +141,7 @@ NUM_FIELDS = PUMP_FIELDS + [
 TEXT_FIELDS = [
     "operator", "shift", "mpesa_till", "mpesa_ref", "credit_customer",
     "kra_pin", "kra_business", "kra_period", "kra_branch", "kra_etr",
-    "kra_return_type", "kra_remarks",
+    "kra_return_type", "kra_remarks", "rtt_note",
 ]
 LIST_FIELDS = ["misc_items", "gas_items", "invoices", "deliveries", "attendants", "receipts"]
 FUELS = ("petrol", "diesel", "kero")
@@ -219,12 +222,24 @@ def has_pumps(raw, fuel):
     return any(num(raw.get("pump_%s_%s" % (pid, x))) for pid, f in PUMPS if f == fuel for x in PUMP_READINGS)
 
 
+def pump_rtt(raw, pid):
+    return max(0.0, num(raw.get("pump_%s_rtt" % pid)))
+
+
 def meter_total(raw, fuel, kind):
-    """Litres (kind "") or KES (kind "sales_") a fuel's pumps moved: closing − opening per pump.
+    """Litres (kind "") or KES (kind "sales_") a fuel's pumps sold: closing − opening per pump,
+    less any fuel returned to the tank (RTT), which the meters counted but nobody bought.
     A pump whose closing reading isn't in yet counts as nothing sold."""
     if has_pumps(raw, fuel):
-        return r2(sum(max(0.0, num(raw.get("pump_%s_%sclose" % (pid, kind))) - num(raw.get("pump_%s_%sopen" % (pid, kind))))
-                      for pid, f in PUMPS if f == fuel))
+        price = num(raw.get(fuel + "_price"))
+        total = 0.0
+        for pid, f in PUMPS:
+            if f != fuel:
+                continue
+            moved = max(0.0, num(raw.get("pump_%s_%sclose" % (pid, kind))) - num(raw.get("pump_%s_%sopen" % (pid, kind))))
+            returned = pump_rtt(raw, pid) * (price if kind else 1)
+            total += max(0.0, moved - returned)
+        return r2(total)
     return r2(max(0.0, num(raw.get(fuel + "_" + kind + "close")) - num(raw.get(fuel + "_" + kind + "open"))))
 
 
@@ -235,6 +250,7 @@ def roll_up_pumps(rec):
             continue
         for x in PUMP_READINGS:
             rec["%s_%s" % (fuel, x)] = r2(sum(num(rec.get("pump_%s_%s" % (pid, x))) for pid, f in PUMPS if f == fuel))
+    rec["rtt_note"] = str(rec.get("rtt_note") or "")[:300]
     return rec
 
 
@@ -295,6 +311,8 @@ def compute(raw):
     return {
         "petrol_litres": r2(pL), "diesel_litres": r2(dL), "kero_litres": r2(kL),
         "total_litres": totalL,
+        **{f + "_rtt": r2(sum(pump_rtt(raw, pid) for pid, pf in PUMPS if pf == f)) for f in FUELS},
+        "total_rtt": r2(sum(pump_rtt(raw, pid) for pid, _ in PUMPS)),
         "petrol_revenue": pRev, "diesel_revenue": dRev, "kero_revenue": kRev,
         "petrol_margin": r2(pRev - pFC), "diesel_margin": r2(dRev - dFC), "kero_margin": r2(kRev - kFC),
         "gas_lube_revenue": gas_lube_rev, "gas_revenue": gas_rev_only, "lube_revenue": lube_rev_only,

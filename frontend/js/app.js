@@ -425,13 +425,14 @@ const pumpField = (id, reading) => `pump_${id}_${reading}`;   // also the input'
 
 // Each fuel box gets a block of meter inputs per pump
 document.querySelectorAll('.pumps[data-fuel]').forEach(box => {
-  const box_inputs = (id, reading, label) => `<div class="ig"><label for="${pumpField(id, reading)}">${label}</label>
+  const box_inputs = (id, reading, label) => `<div class="ig${reading === 'rtt' ? ' rtt' : ''}"><label for="${pumpField(id, reading)}">${label}</label>
     <input type="number" id="${pumpField(id, reading)}" placeholder="0.00" step="0.01" oninput="calc()"></div>`;
   box.innerHTML = pumpsOf(box.dataset.fuel).map(id => `<div class="pump">
     <div class="pump-head"><span class="pump-name">⛽ ${pumpName(id)}</span><span class="pump-sold" id="pump_${id}_sold"></span></div>
     <div class="fuel-row">
       ${box_inputs(id, 'open', 'Opening Litres Meter (L)')}${box_inputs(id, 'close', 'Closing Litres Meter (L)')}
       ${box_inputs(id, 'sales_open', 'Opening Sales Meter (KES)')}${box_inputs(id, 'sales_close', 'Closing Sales Meter (KES)')}
+      ${box_inputs(id, 'rtt', 'RTT — returned to tank (L), if any')}
     </div></div>`).join('');
 });
 
@@ -439,13 +440,22 @@ document.querySelectorAll('.pumps[data-fuel]').forEach(box => {
 function pumpMoved(id, kind) {
   return Math.max(0, r2(fv(pumpField(id, kind + 'close')) - fv(pumpField(id, kind + 'open'))));
 }
+// Fuel returned to tank (RTT) went through the meters but wasn't sold (same rule as the server)
+const PRICE_INPUT = { petrol: 'pPrice', diesel: 'dPrice', kero: 'kPrice' };
+const pumpRtt = id => Math.max(0, fv(pumpField(id, 'rtt')));
+const pumpFuel = id => (PUMPS.find(p => p[0] === id) || [])[1];
+function pumpSold(id, kind) {
+  const returned = pumpRtt(id) * (kind ? fv(PRICE_INPUT[pumpFuel(id)]) : 1);
+  return Math.max(0, r2(pumpMoved(id, kind) - returned));
+}
 // A fuel's totals over its pumps: litres, KES on the sales meters, and the summed readings
 function fuelMeters(fuel) {
   const ids = pumpsOf(fuel);
   const sum = reading => r2(ids.reduce((s, id) => s + fv(pumpField(id, reading)), 0));
   return {
-    litres: r2(ids.reduce((s, id) => s + pumpMoved(id, ''), 0)),
-    sales: r2(ids.reduce((s, id) => s + pumpMoved(id, 'sales_'), 0)),
+    litres: r2(ids.reduce((s, id) => s + pumpSold(id, ''), 0)),
+    sales: r2(ids.reduce((s, id) => s + pumpSold(id, 'sales_'), 0)),
+    rtt: r2(ids.reduce((s, id) => s + pumpRtt(id), 0)),
     hasSales: ids.some(id => fv(pumpField(id, 'sales_open')) || fv(pumpField(id, 'sales_close'))),
     open: sum('open'), close: sum('close'), sales_open: sum('sales_open'), sales_close: sum('sales_close'),
   };
@@ -464,7 +474,8 @@ const FIELD_LABELS = {
   diesel_dip_open: 'Diesel opening dip', diesel_delivered: 'Diesel delivered', diesel_dip_close: 'Diesel closing dip',
   kero_dip_open: 'Kerosene opening dip', kero_delivered: 'Kerosene delivered', kero_dip_close: 'Kerosene closing dip',
   mpesa_amount: 'M-Pesa', mpesa_txns: 'M-Pesa transactions', cash_amount: 'Cash', credit_amount: 'Credit sales',
-  card_amount: 'Card', float_amount: 'Opening float', banked_amount: 'Cash banked',
+  card_amount: 'Card', float_amount: 'Opening float', banked_amount: 'Cash banked', rtt_note: 'Reason for RTT',
+  ...Object.fromEntries(PUMPS.map(([id]) => [pumpField(id, 'rtt'), pumpName(id) + ' returned to tank (L)'])),
   ...Object.fromEntries(PUMPS.flatMap(([id]) => [['open', 'opening meter'], ['close', 'closing meter'],
     ['sales_open', 'opening sales meter'], ['sales_close', 'closing sales meter']]
     .map(([x, what]) => [pumpField(id, x), pumpName(id) + ' ' + what]))),
@@ -1134,9 +1145,12 @@ function updateUI() {
   updatePumpCheckRow('k', c.kPumpSales, c.kPumpVariance, fuelMeters('kero').hasSales);
   // Litres each pump sold, beside its name
   PUMPS.forEach(([id]) => {
-    const litres = pumpMoved(id, '');
-    $('pump_' + id + '_sold').textContent = litres > 0 ? fmtL(litres) + ' L sold' : '';
+    const litres = pumpSold(id, ''), rtt = pumpRtt(id);
+    $('pump_' + id + '_sold').textContent = (litres > 0 ? fmtL(litres) + ' L sold' : '') + (rtt > 0 ? ' · ' + fmtL(rtt) + ' L RTT' : '');
   });
+  const rttAll = r2(PUMPS.reduce((t, [id]) => t + pumpRtt(id), 0));
+  $('rttBox').hidden = !(rttAll > 0 || sv('fRttNote'));
+  $('rttTotal').textContent = rttAll > 0 ? fmtL(rttAll) + ' L returned' : '';
 
   // Tank dip reconciliation rows
   updateDipRow('p', c.pL, c.pExpectedStock, c.pDipVariance, c.pDipHasData);
@@ -1487,7 +1501,7 @@ setInterval(() => { if (document.visibilityState === 'visible' && USER) refreshA
 
 // ── Alert settings (admin, in the Account window) ────────────────────────────
 const ALERT_FIELDS = { asDip: 'dip_shortage_litres', asCash: 'cash_shortage_kes', asAttendant: 'attendant_shortage_kes',
-  asDelivery: 'short_delivery_litres', asMpesa: 'mpesa_mismatch_kes', asLowPetrol: 'low_stock_petrol', asLowDiesel: 'low_stock_diesel', asLowKero: 'low_stock_kero' };
+  asDelivery: 'short_delivery_litres', asMpesa: 'mpesa_mismatch_kes', asRtt: 'rtt_alert_litres', asLowPetrol: 'low_stock_petrol', asLowDiesel: 'low_stock_diesel', asLowKero: 'low_stock_kero' };
 
 async function loadAlertSettings() {
   try {
@@ -1680,7 +1694,8 @@ function populateFormFromRecord(r) {
   const setVal = (id, val) => { if ($(id)) $(id).value = (val === undefined || val === null) ? '' : val; };
 
   // Fuel
-  PUMPS.forEach(([id]) => PUMP_READINGS.forEach(x => setVal(pumpField(id, x), r[pumpField(id, x)] || '')));
+  PUMPS.forEach(([id]) => PUMP_READINGS.concat('rtt').forEach(x => setVal(pumpField(id, x), r[pumpField(id, x)] || '')));
+  setVal('fRttNote', r.rtt_note || '');
   // Days saved before pumps were split show their totals on the fuel's first pump
   Object.keys(FUEL_LABEL).forEach(fuel => {
     const ids = pumpsOf(fuel);
@@ -1746,7 +1761,7 @@ function clearFormForNewEntry() {
   RECEIPTS = [];
   renderReceipts();
   document.querySelectorAll('input[type="number"]').forEach(i => { if (!i.readOnly) i.value = ''; });
-  ['kPin','kBiz','kPeriod','kEtr','fMpesaTill','fMpesaRef','fCreditCust','kRemarks']
+  ['kPin','kBiz','kPeriod','kEtr','fMpesaTill','fMpesaRef','fCreditCust','kRemarks','fRttNote']
     .forEach(id => $(id) && ($(id).value = ''));
   if ($('kReturnType')) $('kReturnType').value = 'vat';
 
@@ -1978,7 +1993,8 @@ async function saveRec() {
     report_date:  sv('fDate') || todayLocal(),
     station:      sv('fStation') || 'Unknown Station',
     // raw inputs
-    ...Object.fromEntries(PUMPS.flatMap(([id]) => PUMP_READINGS.map(x => [pumpField(id, x), fv(pumpField(id, x))]))),
+    ...Object.fromEntries(PUMPS.flatMap(([id]) => PUMP_READINGS.concat('rtt').map(x => [pumpField(id, x), fv(pumpField(id, x))]))),
+    rtt_note: sv('fRttNote'),
     ...Object.fromEntries(Object.keys(FUEL_LABEL).flatMap(fuel => {
       const m = fuelMeters(fuel);
       return PUMP_READINGS.map(x => [fuel + '_' + x, m[x]]);
@@ -2539,10 +2555,14 @@ function openDetail(evt, id) {
 
   // Each pump's readings, then the sales-meter cross-check per fuel (only if recorded)
   const pumpSec = $('rdPumpSec'), pumpList = $('rdPumpItems');
-  const moved = (id, kind) => Math.max(0, num(r[pumpField(id, kind + 'close')]) - num(r[pumpField(id, kind + 'open')]));
+  const rttOf = id => Math.max(0, num(r[pumpField(id, 'rtt')]));
+  const moved = (id, kind) => Math.max(0, Math.max(0, num(r[pumpField(id, kind + 'close')]) - num(r[pumpField(id, kind + 'open')]))
+    - rttOf(id) * (kind ? num(r[pumpFuel(id) + '_price']) : 1));
   const pumpRows = PUMPS.filter(([id]) => PUMP_READINGS.some(x => num(r[pumpField(id, x)])))
     .map(([id, fuel]) => `<div class="m-row"><span>⛽ ${pumpName(id)} · ${FUEL_LABEL[fuel]}</span>
-      <span>${fmtL(moved(id, ''))} L${moved(id, 'sales_') ? ' · KES ' + fmt(moved(id, 'sales_')) : ''}</span></div>`);
+      <span>${fmtL(moved(id, ''))} L${moved(id, 'sales_') ? ' · KES ' + fmt(moved(id, 'sales_')) : ''}${rttOf(id) ? ' · ↩️ ' + fmtL(rttOf(id)) + ' L RTT' : ''}</span></div>`);
+  if (num(r.total_rtt)) pumpRows.push(`<div class="m-row" style="color:var(--acc2)"><span>↩️ Returned to tank: ${fmtL(num(r.total_rtt))} L</span>
+      <span translate="no">${esc(r.rtt_note || 'no reason given')}</span></div>`);
   const fuelPumpData = [
     { label: 'Petrol', fuel: 'petrol', calcRev: num(r.petrol_litres) * num(r.petrol_price) },
     { label: 'Diesel', fuel: 'diesel', calcRev: num(r.diesel_litres) * num(r.diesel_price) },
@@ -2857,7 +2877,7 @@ async function clearAll() {
   );
   if (!ok) return;
   document.querySelectorAll('input[type="number"]').forEach(i => { if(!i.readOnly) i.value=''; });
-  ['kPin','kBiz','kPeriod','kBranch','kEtr','fMpesaTill','fMpesaRef','fCreditCust','kRemarks']
+  ['kPin','kBiz','kPeriod','kBranch','kEtr','fMpesaTill','fMpesaRef','fCreditCust','kRemarks','fRttNote']
     .forEach(id => $(id) && ($(id).value=''));
   INVOICES = [];
   MISC_ITEMS = [];

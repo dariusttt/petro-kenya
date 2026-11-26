@@ -425,3 +425,8 @@ body.is-staff .no-staff{display:none!important}
 .acct-body > :first-child{margin-top:12px}
 .add-row{display:flex;gap:8px;margin-top:12px;align-items:center}
 .add-row input{flex:1;min-width:0}
+
+/* ↩️ Return to tank */
+.pump .ig.rtt{grid-column:1/-1}
+.pump .ig.rtt input{border-style:dashed}
+.rtt-box{margin-top:14px;border-color:rgba(245,197,24,.35)}

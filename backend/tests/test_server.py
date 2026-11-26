@@ -455,6 +455,26 @@ class WorkflowTest(ServerCase):
         self.assertEqual([(m["field"], m["expected"]) for m in mism],
                          [("pump_p2_open", 2050), ("pump_p2_sales_open", 10100)])
 
+    def test_fuel_returned_to_tank_is_not_sold(self):
+        mgr = Client(self.base).login("kmanager")
+        day = {"report_date": "2026-10-13", "station": "Moiben Branch", "petrol_price": 200,
+               "pump_p1_open": 1000, "pump_p1_close": 1120, "pump_p1_sales_open": 0, "pump_p1_sales_close": 24000,
+               "pump_p1_rtt": 20, "pump_p2_open": 500, "pump_p2_close": 510, "pump_p2_rtt": 30,
+               "petrol_dip_open": 5000, "petrol_dip_close": 4900, "rtt_note": "W&M calibration"}
+        rec = mgr.req("POST", "/api/records", day)[1]["record"]
+        self.assertEqual(rec["petrol_litres"], 100)                  # (120 − 20) + nothing from P2 (10 − 30)
+        self.assertEqual((rec["petrol_rtt"], rec["total_rtt"]), (50, 50))
+        self.assertEqual(rec["petrol_revenue"], 20000)
+        self.assertEqual(rec["petrol_pump_sales"], 20000)            # 24,000 on the meter − 20 L × 200
+        self.assertEqual(rec["petrol_pump_variance"], 0)
+        self.assertEqual(rec["petrol_expected_stock"], 4900)         # the returned litres are back in the tank
+        self.assertEqual(rec["rtt_note"], "W&M calibration")
+        alerts = [a for a in self.admin.req("GET", "/api/alerts")[1]["alerts"] if a["kind"] == "rtt"]
+        self.assertEqual([a["message"].split(":")[0] for a in alerts], ["Pump P2"])   # 30 L > 20 L; 20 L isn't
+        self.assertIn("W&M calibration", alerts[0]["message"])
+        mgr.req("POST", "/api/records", {**day, "pump_p2_rtt": 0})
+        self.assertFalse([a for a in self.admin.req("GET", "/api/alerts")[1]["alerts"] if a["kind"] == "rtt"])
+
     def test_staff_never_see_cost_margin_or_profit(self):
         staff, mgr = Client(self.base).login("kisumu"), Client(self.base).login("kmanager")
         day1 = {**self.KISUMU, "report_date": "2026-10-14"}

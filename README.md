@@ -162,6 +162,11 @@ replaces what's there now.
 - **Pumps:** three petrol (P1–P3), three diesel (D1–D3) and one kerosene (K1). Each pump has
   its own litres and sales (KES) meters; a fuel's litres and sales are the sum over its pumps.
   The list is `PUMPS` in `backend/server.py` and `frontend/js/app.js` (and `preview/mock-api.js`).
+- **RTT (return to tank):** each pump has a box for litres pumped during a test or a Weights &
+  Measures calibration and poured back. They're taken off that pump's litres sold and off its sales
+  meter (at the day's price), and stay in the tank for the dip check. A reason box appears when
+  there's RTT, and more than 20 L on one pump in a day (Alert Settings) raises an alert, since RTT can
+  hide fuel that was really sold. RTT shows in a day's details, the monthly report and the PDF.
 - **Opening readings** (each pump's meters and the dips) are filled from the previous saved day's
   closing readings. If someone changes them, the page warns before saving and the
   record is flagged ⚠️ in Records and in its details.

@@ -15,8 +15,10 @@
   const pf = (id, x) => 'pump_' + id + '_' + x;
   const hasPumps = (raw, fuel) => PUMPS.some(([id, f]) => f === fuel && READINGS.some(x => num(raw[pf(id, x)])));
   function meterTotal(raw, fuel, kind) {
+    // less fuel returned to tank (RTT): through the meters, but not sold
     if (hasPumps(raw, fuel)) return r2(PUMPS.filter(p => p[1] === fuel)
-      .reduce((s, [id]) => s + Math.max(0, num(raw[pf(id, kind + 'close')]) - num(raw[pf(id, kind + 'open')])), 0));
+      .reduce((s, [id]) => s + Math.max(0, Math.max(0, num(raw[pf(id, kind + 'close')]) - num(raw[pf(id, kind + 'open')]))
+        - Math.max(0, num(raw[pf(id, 'rtt')])) * (kind ? num(raw[fuel + '_price']) : 1)), 0));
     return r2(Math.max(0, num(raw[fuel + '_' + kind + 'close']) - num(raw[fuel + '_' + kind + 'open'])));
   }
   function rollUpPumps(rec) {
@@ -26,7 +28,8 @@
   const FUEL_NAMES = { petrol: 'Petrol', diesel: 'Diesel', kero: 'Kerosene' };
   const VAT = 0.16, EX = { petrol: 21.95, diesel: 7.21, kero: 7.19 };
   const DEFAULT_SETTINGS = { dip_shortage_litres: 50, cash_shortage_kes: 1000, attendant_shortage_kes: 500,
-    short_delivery_litres: 50, low_stock_petrol: 3000, low_stock_diesel: 3000, low_stock_kero: 1000, alert_emails: '', backup_emails: '' };
+    short_delivery_litres: 50, low_stock_petrol: 3000, low_stock_diesel: 3000, low_stock_kero: 1000, alert_emails: '', backup_emails: '',
+    mpesa_mismatch_kes: 100, rtt_alert_litres: 20 };
 
   const num = v => { const f = parseFloat(v); return Number.isFinite(f) ? f : 0; };
   const r2 = v => Math.round((v + Number.EPSILON) * 100) / 100;
@@ -69,6 +72,7 @@
     FUELS.forEach(f => {
       out[f + '_litres'] = r2(L[f]);
       out[f + '_pump_sales'] = meterTotal(raw, f, 'sales_');
+      out[f + '_rtt'] = r2(PUMPS.filter(p => p[1] === f).reduce((s, [id]) => s + Math.max(0, num(raw[pf(id, 'rtt')])), 0));
       const expected = r2(g(f + '_dip_open') + g(f + '_delivered') - L[f]);
       out[f + '_expected_stock'] = expected;
       out[f + '_dip_variance'] = r2(g(f + '_dip_close') - expected);
@@ -81,6 +85,7 @@
     const excise = r2(L.petrol * EX.petrol + L.diesel * EX.diesel + L.kero * EX.kero);
     const gaps = (raw.attendants || []).map(a => num(a.expected) - num(a.cash) - num(a.mpesa));
     return Object.assign(out, {
+      total_rtt: r2(PUMPS.reduce((t, [id]) => t + Math.max(0, num(raw[pf(id, 'rtt')])), 0)),
       total_litres: totalL, gas_lube_revenue: gasLube, gross_revenue: gross, total_fuel_cost: totalFC,
       exp_misc: expMisc, total_expenses: totalExp, total_cost: r2(totalFC + totalExp), net_profit: net,
       profit_margin: gross > 0 ? r2(net / gross * 100) : 0, collected, collection_variance: r2(gross - collected),
@@ -228,6 +233,10 @@
     (r.attendants || []).forEach(a => {
       const short = num(a.expected) - num(a.cash) - num(a.mpesa);
       if (short > s.attendant_shortage_kes) out.push(['attendant_shortage', String(a.name), `${a.name} handed in KES ${money(short)} less than their sales — ${where}`]);
+    });
+    PUMPS.forEach(([id]) => {
+      const litres = num(r[pf(id, 'rtt')]);
+      if (litres > (s.rtt_alert_litres ?? 20)) out.push(['rtt', id.toUpperCase(), `Pump ${id.toUpperCase()}: ${Math.round(litres)} L returned to tank (RTT)${r.rtt_note ? ' — reason: ' + r.rtt_note : ', no reason given'} — ${where}`]);
     });
     const m = r.opening_mismatches || [];
     if (m.length) out.push(['opening_mismatch', 'day', `${m.length} opening reading${m.length === 1 ? '' : 's'} differ from the previous day's closing — ${where}`]);
