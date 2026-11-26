@@ -41,6 +41,7 @@ DEFAULT_SETTINGS = {
     "alert_emails": "",              # comma-separated addresses that get alert emails
     "backup_emails": "",             # comma-separated addresses that get the nightly backup
     "mpesa_mismatch_kes": 100,       # typed M-Pesa total differs this much from what Safaricom reported
+    "rtt_alert_litres": 20,          # a pump had more than this returned to tank (RTT) in a day
 }
 
 
@@ -216,6 +217,14 @@ def evaluate_alerts(rec, settings):
                         "%s delivery %s was %s L short of the order — %s"
                         % (FUEL_NAMES.get(d.get("fuel"), "Fuel"), d.get("note_no") or "", "{:,.0f}".format(short),
                            where)))
+    # RTT can hide fuel that was really sold ("we poured it back"), so large amounts are flagged
+    for key in sorted(k for k in rec if re.fullmatch(r"pump_[a-z]\d_rtt", k)):
+        litres = num(rec.get(key))
+        if litres > settings["rtt_alert_litres"]:
+            pid = key.split("_")[1].upper()
+            note = str(rec.get("rtt_note") or "").strip()
+            out.append(("rtt", pid, "Pump %s: %s L returned to tank (RTT)%s — %s"
+                        % (pid, "{:,.0f}".format(litres), " — reason: " + note[:80] if note else ", no reason given", where)))
     if rec.get("mpesa_received_count"):
         diff = num(rec.get("mpesa_amount")) - num(rec.get("mpesa_received"))
         if abs(diff) > settings["mpesa_mismatch_kes"]:
@@ -229,6 +238,7 @@ ALERT_TITLES = {
     "dip_shortage": "Tank stock short", "low_stock": "Low tank stock", "cash_shortage": "Cash short",
     "attendant_shortage": "Attendant short", "opening_mismatch": "Opening readings changed",
     "short_delivery": "Short delivery", "mpesa_mismatch": "M-Pesa doesn't match Safaricom",
+    "rtt": "Large return to tank (RTT)",
 }
 
 
@@ -508,7 +518,7 @@ REPORT_FIELDS = [
     ("attendant_shortage_total", "Attendant shortages (KES)"),
     ("petrol_delivered", "Petrol delivered (L)"), ("diesel_delivered", "Diesel delivered (L)"),
     ("kero_delivered", "Kerosene delivered (L)"), ("delivery_shortfall_litres", "Delivery shortfall (L)"),
-    ("dip_variance_total", "Dip variance (L)"),
+    ("dip_variance_total", "Dip variance (L)"), ("total_rtt", "Returned to tank, RTT (L)"),
 ]
 
 
@@ -903,9 +913,9 @@ def backup_report_pdf(db_file, made_at, photos=0):
              ".zip file (python3 backend/server.py restore FILE.zip).", 8.5, grey=True)
     cols = [("Date", 10, "l"), ("Petrol L", 9, "r"), ("Diesel L", 9, "r"), ("Kero L", 8, "r"),
             ("Sales KES", 12, "r"), ("M-Pesa", 11, "r"), ("Cash", 11, "r"), ("Credit", 10, "r"),
-            ("Expenses", 10, "r"), ("Profit", 11, "r"), ("Status", 9, "l"), ("Saved by", 16, "l")]
+            ("Expenses", 10, "r"), ("Profit", 11, "r"), ("RTT L", 6, "r"), ("Status", 9, "l"), ("Saved by", 12, "l")]
     keys = ["petrol_litres", "diesel_litres", "kero_litres", "gross_revenue", "mpesa_amount", "cash_amount",
-            "credit_amount", "total_expenses", "net_profit"]
+            "credit_amount", "total_expenses", "net_profit", "total_rtt"]
     by_station = {}
     for r in records:
         by_station.setdefault(r["station"], []).append(r)
@@ -916,9 +926,9 @@ def backup_report_pdf(db_file, made_at, photos=0):
         doc.space(8)
         doc.heading(station, 12)
         rows = [[d.get("report_date", "")] +
-                [(litres if i < 3 else money)(d.get(k)) for i, k in enumerate(keys)] +
+                [(litres if i < 3 or k == "total_rtt" else money)(d.get(k)) for i, k in enumerate(keys)] +
                 ["Approved" if d.get("approved_at") else "Open", d.get("operator") or ""] for d in days]
-        totals = ["Total"] + [(litres if i < 3 else money)(sum(num(d.get(k)) for d in days))
+        totals = ["Total"] + [(litres if i < 3 or k == "total_rtt" else money)(sum(num(d.get(k)) for d in days))
                               for i, k in enumerate(keys)] + ["%d day%s" % (len(days), "" if len(days) == 1 else "s"), ""]
         doc.table(cols, rows, totals)
     doc.space(10)
