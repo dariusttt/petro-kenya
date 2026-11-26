@@ -158,10 +158,13 @@ CSV_COLS = [
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-# Cost, margin and profit figures: only managers and admins see them, never pump staff
+# Cost, margin and profit figures, and the M-Pesa till/paybill number: only managers and admins
+# see them, never pump staff
 PRIVATE_KEYS = frozenset(
     ["cost", "total_fuel_cost", "total_cost", "net_profit", "profit_margin", "profit_per_litre",
-     "avg_daily_profit"] + [f + "_cost" for f in FUELS] + [f + "_margin" for f in FUELS])
+     "avg_daily_profit"] + [f + "_cost" for f in FUELS] + [f + "_margin" for f in FUELS]
+    # …nor the branch's M-Pesa till or paybill number
+    + ["mpesa_till", "shortcode"])
 
 
 def hide_private(value):
@@ -1334,6 +1337,11 @@ class Handler(BaseHTTPRequestHandler):
             prev = existing or self.store.previous(rec["station"], rec["report_date"]) or {}
             for fuel in FUELS:
                 rec[fuel + "_cost"] = num(prev.get(fuel + "_cost"))
+            rec["mpesa_till"] = (existing or {}).get("mpesa_till") or ""   # staff never see or send it
+        if not rec.get("mpesa_till"):
+            # The branch's own number, as set by the admin for M-Pesa
+            till = next((b["shortcode"] for b in self.mpesa.branches() if b["station"] == rec["station"]), "")
+            rec["mpesa_till"] = till or ""
         for fuel, price in prices.items():
             rec[fuel + "_price"], rec[fuel + "_cost"] = price["sell"], price["cost"]
         rec["prices_set_by_owner"] = sorted(prices)

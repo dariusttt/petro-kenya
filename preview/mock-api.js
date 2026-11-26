@@ -391,7 +391,7 @@
 
   // Cost, margin and profit figures are taken out of everything pump staff receive
   const PRIVATE = new Set(['cost', 'total_fuel_cost', 'total_cost', 'net_profit', 'profit_margin', 'profit_per_litre',
-    'avg_daily_profit', ...FUELS.flatMap(f => [f + '_cost', f + '_margin'])]);
+    'avg_daily_profit', 'mpesa_till', 'shortcode', ...FUELS.flatMap(f => [f + '_cost', f + '_margin'])]);
   function hidePrivate(v) {
     if (Array.isArray(v)) return v.filter(x => !(x && typeof x === 'object' && (PRIVATE.has(x.field) || ('label' in x && PRIVATE.has(x.key)))))
       .map(hidePrivate);
