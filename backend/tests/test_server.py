@@ -475,6 +475,28 @@ class WorkflowTest(ServerCase):
         mgr.req("POST", "/api/records", {**day, "pump_p2_rtt": 0})
         self.assertFalse([a for a in self.admin.req("GET", "/api/alerts")[1]["alerts"] if a["kind"] == "rtt"])
 
+    def test_staff_never_see_the_till_number(self):
+        h = self.httpd.RequestHandlerClass
+        h.store.conn.execute("DELETE FROM mpesa_payments")
+        h.store.conn.commit()
+        self.admin.req("PUT", "/api/stations/Moiben%20Branch/mpesa", {"shortcode": "5123456"})
+        Client(self.base).req("POST", "/api/c2b/%s/confirm" % h.mpesa.callback_secret(), {
+            "TransID": "RZ1", "TransTime": "20261015081500", "TransAmount": "100", "BusinessShortCode": "5123456"})
+        staff, mgr = Client(self.base).login("kisumu"), Client(self.base).login("kmanager")
+        day = {**self.KISUMU, "report_date": "2026-10-15"}
+        rec = staff.req("POST", "/api/records", {**day, "mpesa_till": "9999999"})[1]["record"]
+        self.assertNotIn("mpesa_till", rec)
+        self.assertEqual(mgr.req("GET", "/api/records/%d" % rec["id"])[1]["mpesa_till"], "5123456")  # the branch's own
+        pays = staff.req("GET", "/api/mpesa/payments?date=2026-10-15")[1]
+        self.assertEqual(pays["count"], 1)
+        self.assertNotIn("shortcode", pays["payments"][0])
+        self.assertEqual(mgr.req("GET", "/api/mpesa/payments?date=2026-10-15")[1]["payments"][0]["shortcode"], "5123456")
+        mgr.req("POST", "/api/records", {**day, "mpesa_till": "5123456", "cash_amount": 1})
+        staff.req("POST", "/api/records", {**day, "cash_amount": 2})            # staff save keeps it
+        self.assertEqual(mgr.req("GET", "/api/records/%d" % rec["id"])[1]["mpesa_till"], "5123456")
+        h.store.conn.execute("UPDATE stations SET mpesa_shortcode = NULL")
+        h.store.conn.commit()
+
     def test_staff_never_see_cost_margin_or_profit(self):
         staff, mgr = Client(self.base).login("kisumu"), Client(self.base).login("kmanager")
         day1 = {**self.KISUMU, "report_date": "2026-10-14"}
