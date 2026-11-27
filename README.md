@@ -74,8 +74,6 @@ add a volume mounted at `/data`, and set `PK_DB=/data/petrokenya.sqlite3`,
   Input VAT comes from fuel deliveries that carry the supplier's **eTIMS invoice number** (enter the
   invoice amount, and its VAT if known, with the delivery). Deliveries without an eTIMS invoice are
   shown as **input VAT at risk**, since KRA may refuse to let you claim it.
-- **Excise duty and road levy** are collected before fuel reaches the station (they're in the buying
-  price), so they're shown on the KRA page for information and not added to what's payable.
 - **eTIMS check:** each day, enter the total declared on eTIMS (ETR daily Z report + eTIMS portal
   invoices). The KRA page compares it with sales from the pumps, and a shortfall of more than
   KES 500 (Tax Rates) raises an **eTIMS sales declared short** alert.
@@ -293,7 +291,7 @@ python3 backend/server.py reset-password mary
 
 JSON in and out. Everything except `/api/health` and `/api/login` needs a
 signed-in session (cookie). The server recomputes all figures — litres, revenue,
-profit, VAT, excise, road levy, dip and pump variances — whenever a record is saved.
+profit, VAT, dip and pump variances — whenever a record is saved.
 
 | Method | Path | Description |
 |--------|------|-------------|
