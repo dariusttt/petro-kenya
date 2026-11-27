@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PetroKenya">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/styles.css?v=23">
+<link rel="stylesheet" href="css/styles.css?v=24">
 </head>
 <body>
 
@@ -112,10 +112,10 @@
       <div class="card-unit">Daily Net</div>
       <div class="card-sub" id="cMarginSub">Margin: 0%</div>
     </div>
-    <div class="card" style="--c:#f5c518">
-      <div class="card-lbl">KRA Tax Payable</div>
+    <div class="card priv" style="--c:#f5c518">
+      <div class="card-lbl">VAT Payable</div>
       <div class="card-val" id="cTax">KES 0</div>
-      <div class="card-unit">VAT + Excise</div>
+      <div class="card-unit">Output − input VAT</div>
       <div class="card-sub" id="cTaxSub">—</div>
     </div>
     <div class="card" style="--c:#5bb8e0">
@@ -492,6 +492,9 @@
         <div class="ig"><label for="dvReceived">Litres Received</label><input type="number" id="dvReceived" placeholder="0" step="0.01"></div>
         <div class="ig"><label for="dvDipBefore">Dip Before (L)</label><input type="number" id="dvDipBefore" placeholder="optional" step="0.01"></div>
         <div class="ig"><label for="dvDipAfter">Dip After (L)</label><input type="number" id="dvDipAfter" placeholder="optional" step="0.01"></div>
+        <div class="ig"><label for="dvEtims">Supplier eTIMS Invoice No.</label><input type="text" id="dvEtims" placeholder="needed to claim the VAT"></div>
+        <div class="ig priv"><label for="dvInvoice">Invoice Amount incl. VAT (KES)</label><input type="number" id="dvInvoice" placeholder="0.00" step="0.01"></div>
+        <div class="ig priv"><label for="dvVat">VAT on Invoice (KES)</label><input type="number" id="dvVat" placeholder="worked out if blank" step="0.01"></div>
       </div>
       <div class="actions" style="margin-top:12px">
         <button class="btn btn-g" onclick="addDelivery()">＋ Add Delivery</button>
@@ -645,8 +648,8 @@
       <div class="kra-head">
         <div class="kra-seal">🇰🇪</div>
         <div>
-          <div class="kra-ttl">Kenya Revenue Authority — iTax</div>
-          <div class="kra-sub">Petroleum Station Daily Sales Declaration · VAT & Excise Duty Filing</div>
+          <div class="kra-ttl">KRA Tax — VAT &amp; eTIMS</div>
+          <div class="kra-sub">Today's VAT, the eTIMS check, and the monthly summary for your iTax VAT return</div>
         </div>
       </div>
       <div class="kra-body">
@@ -670,19 +673,38 @@
             </select></div>
         </div>
 
-        <!-- AUTO COMPUTED -->
+        <!-- TODAY'S VAT -->
         <div class="kra-computed">
-          <div class="kcc-title">Auto-Computed Tax Figures</div>
+          <div class="kcc-title">Today's VAT</div>
           <div class="kcc-grid">
-            <div class="kcc-item"><div class="lbl">TAXABLE SALES (Ex-VAT)</div><div class="val" id="kExVat">KES 0.00</div></div>
-            <div class="kcc-item"><div class="lbl">OUTPUT VAT @ 16%</div><div class="val" id="kVat">KES 0.00</div></div>
-            <div class="kcc-item"><div class="lbl">TOTAL INCL. VAT</div><div class="val" id="kInclVat">KES 0.00</div></div>
-            <div class="kcc-item"><div class="lbl">EXCISE — PETROL @ KES 21.95/L</div><div class="val" id="kExcP">KES 0.00</div></div>
-            <div class="kcc-item"><div class="lbl">EXCISE — DIESEL @ KES 7.21/L</div><div class="val" id="kExcD">KES 0.00</div></div>
-            <div class="kcc-item"><div class="lbl">EXCISE — KEROSENE @ KES 7.19/L</div><div class="val" id="kExcK">KES 0.00</div></div>
-            <div class="kcc-item"><div class="lbl">ROAD LEVY — PETROL @ KES 18/L</div><div class="val" id="kRLP">KES 0.00</div></div>
-            <div class="kcc-item"><div class="lbl">ROAD LEVY — DIESEL @ KES 13.19/L</div><div class="val" id="kRLD">KES 0.00</div></div>
-            <div class="kcc-item big"><div class="lbl" style="color:var(--acc2)">TOTAL VAT + EXCISE PAYABLE</div><div class="val" id="kTotalTax">KES 0.00</div></div>
+            <div class="kcc-item"><div class="lbl">SALES INCL. VAT</div><div class="val" id="kInclVat">KES 0.00</div></div>
+            <div class="kcc-item"><div class="lbl">TAXABLE SALES (EXCL. VAT)</div><div class="val" id="kExVat">KES 0.00</div></div>
+            <div class="kcc-item"><div class="lbl">OUTPUT VAT @ <span id="kVatRate">16</span>%</div><div class="val" id="kVat">KES 0.00</div></div>
+            <div class="kcc-item priv"><div class="lbl">INPUT VAT — FUEL BOUGHT WITH eTIMS INVOICES</div><div class="val" id="kInVat">KES 0.00</div></div>
+            <div class="kcc-item priv"><div class="lbl" style="color:var(--acc2)">INPUT VAT AT RISK — NO eTIMS INVOICE</div><div class="val" id="kInVatRisk">KES 0.00</div></div>
+            <div class="kcc-item big priv"><div class="lbl" style="color:var(--acc2)">VAT PAYABLE TODAY (OUTPUT − INPUT)</div><div class="val" id="kTotalTax">KES 0.00</div></div>
+          </div>
+        </div>
+
+        <!-- eTIMS: what was declared to KRA, against what the pumps sold -->
+        <div class="kra-computed">
+          <div class="kcc-title">🧾 eTIMS Check</div>
+          <div class="ig"><label for="fEtims">Sales declared on eTIMS today (KES)</label>
+            <input type="number" id="fEtims" step="0.01" placeholder="ETR daily (Z) report + eTIMS portal invoices" oninput="calc()"></div>
+          <div class="m-sub" id="kEtimsCheck" style="margin:8px 0 0"></div>
+        </div>
+
+        <!-- Excise and road levy: for information only -->
+        <div class="kra-computed">
+          <div class="kcc-title">Excise Duty &amp; Road Levy — already in your buying price</div>
+          <div class="m-sub" style="margin:0 0 10px">These are collected before the fuel reaches the station, so they're not
+            added to what you pay KRA. Shown for information.</div>
+          <div class="kcc-grid">
+            <div class="kcc-item"><div class="lbl">EXCISE — PETROL @ KES <span id="kRateExP">—</span>/L</div><div class="val" id="kExcP">KES 0.00</div></div>
+            <div class="kcc-item"><div class="lbl">EXCISE — DIESEL @ KES <span id="kRateExD">—</span>/L</div><div class="val" id="kExcD">KES 0.00</div></div>
+            <div class="kcc-item"><div class="lbl">EXCISE — KEROSENE @ KES <span id="kRateExK">—</span>/L</div><div class="val" id="kExcK">KES 0.00</div></div>
+            <div class="kcc-item"><div class="lbl">ROAD LEVY — PETROL @ KES <span id="kRateRlP">—</span>/L</div><div class="val" id="kRLP">KES 0.00</div></div>
+            <div class="kcc-item"><div class="lbl">ROAD LEVY — DIESEL @ KES <span id="kRateRlD">—</span>/L</div><div class="val" id="kRLD">KES 0.00</div></div>
           </div>
         </div>
 
@@ -692,16 +714,14 @@
         </div>
 
         <div class="kra-note">
-          ⚠️ <b>STATUTORY RATES (Kenya 2024/25):</b> &nbsp;VAT 16% &nbsp;|&nbsp;
-          Excise Petrol KES 21.95/L &nbsp;|&nbsp; Excise Diesel KES 7.21/L &nbsp;|&nbsp;
-          Excise Kerosene KES 7.19/L &nbsp;|&nbsp; Road Levy Petrol KES 18.00/L &nbsp;|&nbsp;
-          Road Levy Diesel KES 13.19/L.
-          All prices are VAT-inclusive. ETR/ESD receipt required per transaction.
-          Verify at <b>itax.kra.go.ke</b> before filing.
+          ⚠️ <b>RATES IN USE:</b> <span id="kRatesNote">—</span>. The admin updates them under 👤 Account → Tax Rates.
+          Prices include VAT; every sale needs an eTIMS invoice (ETR or portal). Check KRA's current rates and confirm the
+          figures with your accountant before filing on <b>itax.kra.go.ke</b>.
         </div>
 
         <div class="actions">
-          <button class="btn btn-y" onclick="openKra()">📋 Preview & File KRA Return</button>
+          <button class="btn btn-y" onclick="openKra()">📋 Preview Today's Tax</button>
+          <button class="btn btn-b no-staff" onclick="openVatSummary()">🧾 Monthly VAT Summary</button>
           <button class="btn btn-g" data-save-btn onclick="saveRec()">💾 Save Daily Record</button>
           <button class="btn btn-b" id="approveDayBtn" onclick="approveCurrentDay()" hidden>✅ Approve Day</button>
           <button class="btn btn-o" onclick="window.print()">🖨️ Print Report</button>
@@ -799,6 +819,18 @@
         <tbody id="repDaily"></tbody>
       </table></div>
     </div>
+    <div class="box no-staff" id="vatBox" style="margin-top:14px">
+      <div class="box-title">🧾 VAT for iTax <span class="price-tag" id="vatFor">—</span></div>
+      <div class="m-sub" style="margin:0 0 10px">The month's VAT per branch: output VAT on sales, input VAT on fuel bought with
+        suppliers' eTIMS invoices, and what's payable. Copy these into your iTax VAT return.</div>
+      <div class="tbl-wrap"><table class="report-table">
+        <thead id="vatHead"></thead><tbody id="vatBody"></tbody>
+      </table></div>
+      <div class="m-sub" id="vatMissing" style="margin:10px 0 0"></div>
+      <div class="actions" style="margin-top:10px">
+        <button class="btn btn-b btn-sm" onclick="downloadVatCSV()">📥 Download VAT Summary</button>
+      </div>
+    </div>
   </div>
 
   <!-- ══ PANEL: ANALYTICS ══ -->
@@ -842,7 +874,7 @@
           <th>#</th><th>Date</th><th>Station</th><th>Operator</th>
           <th>P-Litres</th><th>D-Litres</th><th>Total L</th>
           <th>Sales KES</th><th>M-Pesa</th><th>Cash</th>
-          <th>Expenses</th><th class="priv">Profit</th><th>VAT</th><th>Tax Total</th><th>Status</th><th class="no-staff">Del</th>
+          <th>Expenses</th><th class="priv">Profit</th><th>VAT</th><th class="priv">VAT Payable</th><th>Status</th><th class="no-staff">Del</th>
         </tr></thead>
         <tbody id="recBody">
           <tr><td colspan="15" style="text-align:center;padding:32px;color:var(--mut);font-family:var(--mono);font-size:.76rem">No records yet — save a daily entry first.</td></tr>
@@ -859,7 +891,7 @@
 <!-- ══ KRA MODAL ══ -->
 <div class="overlay" id="kraOverlay">
   <div class="modal">
-    <div class="m-title">🇰🇪 KRA iTax — Daily Filing Preview</div>
+    <div class="m-title">🇰🇪 KRA — Today's Tax</div>
     <div class="m-sub">Kenya Revenue Authority · Petroleum Station Tax Declaration</div>
     <div class="m-sec">
       <div class="m-sec-ttl">Taxpayer Details</div>
@@ -878,18 +910,21 @@
       <div class="m-row"><span>Gross Revenue (VAT-incl.)</span><span id="mGross">—</span></div>
     </div>
     <div class="m-sec">
-      <div class="m-sec-ttl">Tax Breakdown (C++ Computed)</div>
-      <div class="m-row"><span>Taxable Sales (Ex-VAT)</span><span id="mExVat">—</span></div>
-      <div class="m-row"><span>Output VAT @ 16%</span><span id="mVat">—</span></div>
-      <div class="m-row"><span>Excise Duty — Petrol</span><span id="mExcP">—</span></div>
-      <div class="m-row"><span>Excise Duty — Diesel</span><span id="mExcD">—</span></div>
-      <div class="m-row"><span>Excise Duty — Kerosene</span><span id="mExcK">—</span></div>
-      <div class="m-row"><span>Road Levy — Petrol</span><span id="mRLP">—</span></div>
-      <div class="m-row"><span>Road Levy — Diesel</span><span id="mRLD">—</span></div>
-      <div class="m-row" style="border-top:1px solid var(--acc2);margin-top:6px;padding-top:8px">
-        <span><b>TOTAL VAT + EXCISE PAYABLE</b></span>
+      <div class="m-sec-ttl">VAT</div>
+      <div class="m-row"><span>Taxable Sales (excl. VAT)</span><span id="mExVat">—</span></div>
+      <div class="m-row"><span>Output VAT</span><span id="mVat">—</span></div>
+      <div class="m-row priv"><span>Input VAT (suppliers' eTIMS invoices)</span><span id="mInVat">—</span></div>
+      <div class="m-row priv"><span>Input VAT at risk (no eTIMS invoice)</span><span id="mInVatRisk">—</span></div>
+      <div class="m-row priv" style="border-top:1px solid var(--acc2);margin-top:6px;padding-top:8px">
+        <span><b>VAT PAYABLE (OUTPUT − INPUT)</b></span>
         <span id="mTotal" style="color:#ffd700;font-size:1rem">—</span>
       </div>
+      <div class="m-row"><span>Declared on eTIMS</span><span id="mEtims">—</span></div>
+    </div>
+    <div class="m-sec">
+      <div class="m-sec-ttl">Already in the buying price (information)</div>
+      <div class="m-row"><span>Excise Duty — Petrol / Diesel / Kerosene</span><span id="mExc">—</span></div>
+      <div class="m-row"><span>Road Levy — Petrol / Diesel</span><span id="mRL">—</span></div>
     </div>
     <div class="m-sec">
       <div class="m-sec-ttl">Remarks</div>
@@ -1214,6 +1249,26 @@
       </div>
     </details>
 
+    <details class="acct-sec" id="taxSec" hidden>
+      <summary><span class="acct-ico">🧾</span><span class="acct-ttl">Tax Rates<small id="taxSum">—</small></span></summary>
+      <div class="acct-body">
+        <div class="m-sub" style="margin:0 0 10px">Check KRA's current rates. Each day keeps the rates it was saved with.
+          Excise and road levy are only shown on the KRA page — they're already in your buying price.</div>
+        <div class="g2" style="gap:10px">
+          <div class="ig"><label for="trVat">VAT rate (%)</label><input type="number" id="trVat" step="0.01"></div>
+          <div class="ig"><label for="trEtims">Alert when eTIMS is short by more than (KES)</label><input type="number" id="trEtims"></div>
+          <div class="ig"><label for="trExP">Excise — petrol (KES/L)</label><input type="number" id="trExP" step="0.01"></div>
+          <div class="ig"><label for="trExD">Excise — diesel (KES/L)</label><input type="number" id="trExD" step="0.01"></div>
+          <div class="ig"><label for="trExK">Excise — kerosene (KES/L)</label><input type="number" id="trExK" step="0.01"></div>
+          <div class="ig"><label for="trRlP">Road levy — petrol (KES/L)</label><input type="number" id="trRlP" step="0.01"></div>
+          <div class="ig"><label for="trRlD">Road levy — diesel (KES/L)</label><input type="number" id="trRlD" step="0.01"></div>
+        </div>
+        <div class="actions" style="margin-top:10px">
+          <button class="btn btn-g btn-sm" onclick="saveTaxSettings()">💾 Save Tax Rates</button>
+        </div>
+      </div>
+    </details>
+
     <details class="acct-sec" id="backupSec" hidden>
       <summary><span class="acct-ico">💾</span><span class="acct-ttl">Backups<small id="bkSum">—</small></span></summary>
       <div class="acct-body">
@@ -1303,7 +1358,7 @@
 
 <div id="toast"></div>
 
-<script src="js/i18n.js?v=23"></script>
-<script src="js/app.js?v=23"></script>
+<script src="js/i18n.js?v=24"></script>
+<script src="js/app.js?v=24"></script>
 </body>
 </html>

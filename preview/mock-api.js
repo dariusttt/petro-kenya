@@ -29,7 +29,8 @@
   const VAT = 0.16, EX = { petrol: 21.95, diesel: 7.21, kero: 7.19 };
   const DEFAULT_SETTINGS = { dip_shortage_litres: 50, cash_shortage_kes: 1000, attendant_shortage_kes: 500,
     short_delivery_litres: 50, low_stock_petrol: 3000, low_stock_diesel: 3000, low_stock_kero: 1000, alert_emails: '', backup_emails: '',
-    mpesa_mismatch_kes: 100, rtt_alert_litres: 20 };
+    mpesa_mismatch_kes: 100, rtt_alert_litres: 20, etims_gap_kes: 500, vat_rate_pct: 16, excise_petrol: 21.95,
+    excise_diesel: 7.21, excise_kero: 7.19, road_levy_petrol: 18, road_levy_diesel: 13.19 };
 
   const num = v => { const f = parseFloat(v); return Number.isFinite(f) ? f : 0; };
   const r2 = v => Math.round((v + Number.EPSILON) * 100) / 100;
@@ -81,7 +82,12 @@
     const expMisc = misc.length ? r2(misc.reduce((s, i) => s + num(i.amount), 0)) : g('exp_misc');
     const totalExp = r2(g('exp_wages') + g('exp_elec') + g('exp_water') + g('exp_maint') + g('exp_lubes') + expMisc);
     const net = r2(gross - totalFC - totalExp);
-    const exVat = r2(gross / (1 + VAT)), vat = r2(gross - exVat);
+    // VAT payable = output − input VAT (deliveries with a supplier eTIMS invoice); excise is in the buying price
+    const vr = raw.vat_rate !== undefined ? num(raw.vat_rate) : VAT;
+    const exVat = r2(gross / (1 + vr)), vat = r2(gross - exVat);
+    let inVat = 0, inRisk = 0;
+    (raw.deliveries || []).forEach(d => { const v = num(d.vat_amount) || num(d.invoice_amount) * vr / (1 + vr);
+      if (String(d.etims_invoice || '').trim()) inVat += v; else inRisk += v; });
     const excise = r2(L.petrol * EX.petrol + L.diesel * EX.diesel + L.kero * EX.kero);
     const gaps = (raw.attendants || []).map(a => num(a.expected) - num(a.cash) - num(a.mpesa));
     return Object.assign(out, {
@@ -89,7 +95,9 @@
       total_litres: totalL, gas_lube_revenue: gasLube, gross_revenue: gross, total_fuel_cost: totalFC,
       exp_misc: expMisc, total_expenses: totalExp, total_cost: r2(totalFC + totalExp), net_profit: net,
       profit_margin: gross > 0 ? r2(net / gross * 100) : 0, collected, collection_variance: r2(gross - collected),
-      output_vat: vat, total_excise: excise, total_tax: r2(vat + excise),
+      output_vat: vat, total_excise: excise, taxable_sales: exVat, vat_rate: vr,
+      input_vat: r2(inVat), input_vat_at_risk: r2(inRisk), vat_payable: r2(vat - inVat), total_tax: r2(vat - inVat),
+      etims_gap: num(raw.etims_sales) > 0 ? r2(gross - num(raw.etims_sales)) : 0,
       delivery_shortfall_litres: r2((raw.deliveries || []).reduce((s, d) =>
         s + Math.max(0, num(d.litres_ordered) - num(d.litres_received)), 0)),
       attendant_shortage_total: r2(gaps.filter(x => x > 0).reduce((s, x) => s + x, 0)),
@@ -290,8 +298,8 @@
   // ── Monthly report ──────────────────────────────────────────────────────────
   const REPORT_FIELDS = [['petrol_litres', 'Petrol litres'], ['diesel_litres', 'Diesel litres'], ['kero_litres', 'Kerosene litres'],
     ['total_litres', 'Total litres'], ['gross_revenue', 'Sales (KES)'], ['total_fuel_cost', 'Fuel cost (KES)'],
-    ['total_expenses', 'Expenses (KES)'], ['net_profit', 'Net profit (KES)'], ['output_vat', 'VAT (KES)'],
-    ['total_excise', 'Excise (KES)'], ['total_tax', 'Tax total (KES)'], ['mpesa_amount', 'M-Pesa (KES)'],
+    ['total_expenses', 'Expenses (KES)'], ['net_profit', 'Net profit (KES)'], ['output_vat', 'Output VAT (KES)'],
+    ['input_vat', 'Input VAT, eTIMS invoices (KES)'], ['total_tax', 'VAT payable (KES)'], ['etims_sales', 'Declared on eTIMS (KES)'], ['mpesa_amount', 'M-Pesa (KES)'],
     ['cash_amount', 'Cash (KES)'], ['card_amount', 'Card (KES)'], ['credit_amount', 'Credit sales (KES)'],
     ['collection_variance', 'Sales not collected (KES)'], ['attendant_shortage_total', 'Attendant shortages (KES)'],
     ['petrol_delivered', 'Petrol delivered (L)'], ['diesel_delivered', 'Diesel delivered (L)'], ['kero_delivered', 'Kerosene delivered (L)'],
@@ -391,7 +399,7 @@
 
   // Cost, margin and profit figures are taken out of everything pump staff receive
   const PRIVATE = new Set(['cost', 'total_fuel_cost', 'total_cost', 'net_profit', 'profit_margin', 'profit_per_litre',
-    'avg_daily_profit', 'mpesa_till', 'shortcode', ...FUELS.flatMap(f => [f + '_cost', f + '_margin'])]);
+    'avg_daily_profit', 'mpesa_till', 'shortcode', 'invoice_amount', 'vat_amount', 'input_vat', 'input_vat_at_risk', 'vat_payable', 'total_tax', 'tax', ...FUELS.flatMap(f => [f + '_cost', f + '_margin'])]);
   function hidePrivate(v) {
     if (Array.isArray(v)) return v.filter(x => !(x && typeof x === 'object' && (PRIVATE.has(x.field) || ('label' in x && PRIVATE.has(x.key)))))
       .map(hidePrivate);
@@ -667,6 +675,23 @@
     }
     if (path === '/api/backups/email') fail(400, "The website preview can't send email — this works once the app is hosted");
     if (path === '/api/settings/test-email') fail(400, "The website preview can't send email — this works once the app is hosted");
+    if (path === '/api/tax-rates') return { vat_rate_pct: 16, excise_petrol: 21.95, excise_diesel: 7.21, excise_kero: 7.19, road_levy_petrol: 18, road_levy_diesel: 13.19 };
+    if (path.startsWith('/api/reports/vat')) {
+      if (pu.role === 'staff') fail(403, 'The VAT summary is for branch managers and admins');
+      const month = q.month || kenyaToday().slice(0, 7), st = scope(pu, q.station);
+      const F = [['gross_revenue', 'Sales incl. VAT (KES)'], ['taxable_sales', 'Taxable sales excl. VAT (KES)'], ['output_vat', 'Output VAT (KES)'],
+        ['input_vat', 'Input VAT — with eTIMS invoices (KES)'], ['input_vat_at_risk', 'Input VAT at risk — no eTIMS invoice (KES)'],
+        ['vat_payable', 'VAT payable (KES)'], ['etims_sales', 'Sales declared on eTIMS (KES)'], ['etims_gap', 'Not declared on eTIMS (KES)']];
+      const recs = live(db).filter(r => r.report_date.startsWith(month) && (!st || r.station === st));
+      const by = {};
+      recs.forEach(r => { const b = by[r.station] = by[r.station] || { station: r.station, days: 0, ...Object.fromEntries(F.map(([k]) => [k, 0])) };
+        b.days++; F.forEach(([k]) => { b[k] = r2(b[k] + num(r[k])); }); });
+      const branches = Object.values(by).sort((a, b) => a.station.localeCompare(b.station));
+      const totals = { station: 'All branches', days: branches.reduce((t, b) => t + b.days, 0),
+        ...Object.fromEntries(F.map(([k]) => [k, r2(branches.reduce((t, b) => t + b[k], 0))])) };
+      return { month, fields: F.map(([key, label]) => ({ key, label })), branches, totals,
+        missing_etims: recs.filter(r => num(r.gross_revenue) > 0 && !num(r.etims_sales)).map(r => ({ date: r.report_date, station: r.station })) };
+    }
     if (path.startsWith('/api/reports/monthly')) {
       const month = q.month || kenyaToday().slice(0, 7), st = scope(pu, q.station);
       return monthly(live(db).filter(r => r.report_date.startsWith(month) && (!st || r.station === st)), month);

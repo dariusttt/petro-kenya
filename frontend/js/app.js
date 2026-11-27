@@ -4,16 +4,13 @@
    source of truth and recomputes every figure on save.
    ══════════════════════════════════════════════════════════════════════════════ */
 
-// ── Constants (same as backend/server.py) ────────────────────────────────────
-const VAT       = 0.16;
-const EX_P      = 21.95;   // Excise petrol
-const EX_D      = 7.21;    // Excise diesel
-const EX_K      = 7.19;    // Excise kerosene
-const RL_P      = 18.00;   // Road levy petrol
-const RL_D      = 13.19;   // Road levy diesel
+// ── Tax rates: the admin sets them (Account → Tax Rates); these are only the defaults ──
+let TAX = { vat_rate_pct: 16, excise_petrol: 21.95, excise_diesel: 7.21, excise_kero: 7.19,
+            road_levy_petrol: 18.0, road_levy_diesel: 13.19 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const $  = id => document.getElementById(id);
+const num = v => { const f = parseFloat(v); return Number.isFinite(f) ? f : 0; };
 const fv = id => parseFloat($(id)?.value) || 0;
 const sv = id => $(id)?.value?.trim() || '';
 const r2 = v  => Math.round(v * 100) / 100;
@@ -552,8 +549,16 @@ async function purgeFromBin(id, date) {
   } catch (e) { toast('⚠️ ' + e.message, true); }
 }
 
+async function loadTaxRates() {
+  try {
+    TAX = { ...TAX, ...(await api('GET', '/tax-rates')) };
+    storeSet('pk_tax_v1', TAX);
+  } catch (e) { const cached = storeGet('pk_tax_v1'); if (cached) TAX = { ...TAX, ...cached }; }
+}
+
 async function startSession() {
   await loadStations();
+  await loadTaxRates();
   applyUserToUI();
   await syncFromServer();
   flushOutbox();
@@ -579,11 +584,11 @@ function openAccount() {
   // Start with every section folded, so the page is short
   document.querySelectorAll('#accountOverlay details.acct-sec').forEach(d => { d.open = false; });
   ['pwCurrent', 'pwNew'].forEach(id => $(id).value = '');
-  ['adminGroup', 'stationsSec', 'usersSec', 'alertSettingsSec', 'backupSec'].forEach(id => { $(id).hidden = !isAdmin; });
+  ['adminGroup', 'stationsSec', 'usersSec', 'alertSettingsSec', 'taxSec', 'backupSec'].forEach(id => { $(id).hidden = !isAdmin; });
   if (isAdmin) {
     MP_EDITING = null; renderStationsAdmin(); loadMpesaStatus();
     showAddUser(false); loadUsers();
-    loadAlertSettings();
+    loadAlertSettings(); loadTaxSettings();
     BK_SHOW_ALL = false; loadBackups();
   }
   $('accountOverlay').classList.add('open');
@@ -1032,13 +1037,22 @@ function compute() {
   const revPerL    = totalL > 0 ? r2(grossRev / totalL) : 0;
   const profitPerL = totalL > 0 ? r2(netProfit / totalL) : 0;
 
-  // KRA Tax
-  const exVat      = r2(grossRev / (1 + VAT));
+  // VAT payable = output VAT on sales − input VAT on fuel bought with a supplier's eTIMS invoice
+  // (same rule as the server). Excise and road levy are already in the buying price: shown only.
+  const vatRate    = num(TAX.vat_rate_pct) / 100;
+  const exVat      = r2(grossRev / (1 + vatRate));
   const outputVAT  = r2(grossRev - exVat);
-  const excP = r2(pL * EX_P), excD = r2(dL * EX_D), excK = r2(kL * EX_K);
+  let inputVat = 0, inputVatRisk = 0;
+  DELIVERIES.forEach(d => {
+    const vat = num(d.vat_amount) || num(d.invoice_amount) * vatRate / (1 + vatRate);
+    if (String(d.etims_invoice || '').trim()) inputVat += vat; else inputVatRisk += vat;
+  });
+  inputVat = r2(inputVat); inputVatRisk = r2(inputVatRisk);
+  const excP = r2(pL * TAX.excise_petrol), excD = r2(dL * TAX.excise_diesel), excK = r2(kL * TAX.excise_kero);
   const totalExcise = r2(excP + excD + excK);
-  const rlP = r2(pL * RL_P), rlD = r2(dL * RL_D);
-  const totalTax  = r2(outputVAT + totalExcise);
+  const rlP = r2(pL * TAX.road_levy_petrol), rlD = r2(dL * TAX.road_levy_diesel);
+  const totalTax  = r2(outputVAT - inputVat);
+  const etims = fv('fEtims'), etimsGap = etims > 0 ? r2(grossRev - etims) : 0;
 
   return {
     pL,dL,kL,totalL,pRev,dRev,kRev,pFC,dFC,kFC,pMgn,dMgn,kMgn,
@@ -1050,7 +1064,8 @@ function compute() {
     pDipHasData,dDipHasData,kDipHasData,
     grossRev,totalFC,totalExp,totalCost,netProfit,profitMgn,revPerL,profitPerL,
     mpesa,cash,credit,card,collected,variance,mpesaPct,cashPct,otherPct,tillBal,
-    exVat,outputVAT,excP,excD,excK,totalExcise,rlP,rlD,totalTax
+    exVat,outputVAT,excP,excD,excK,totalExcise,rlP,rlD,totalTax,
+    vatRate,inputVat,inputVatRisk,etims,etimsGap
   };
 }
 
@@ -1172,7 +1187,7 @@ function updateUI() {
   $('cProfit').textContent= 'KES '+fmt(c.netProfit);
   $('cMarginSub').textContent = `Margin: ${c.profitMgn.toFixed(1)}%`;
   $('cTax').textContent   = 'KES '+fmt(c.totalTax);
-  $('cTaxSub').textContent= `VAT: KES ${fmt(c.outputVAT)} | Excise: KES ${fmt(c.totalExcise)}`;
+  $('cTaxSub').textContent= `Output KES ${fmt(c.outputVAT)} − input KES ${fmt(c.inputVat)}`;
   $('cRevPerL').textContent = 'KES '+fmt(c.revPerL);
   $('cProfPerL').textContent = `Profit/L: KES ${fmt(c.profitPerL)}`;
 
@@ -1227,6 +1242,26 @@ function updateUI() {
   $('kRLP').textContent    = 'KES '+fmt(c.rlP);
   $('kRLD').textContent    = 'KES '+fmt(c.rlD);
   $('kTotalTax').textContent = 'KES '+fmt(c.totalTax);
+  $('kInVat').textContent    = 'KES '+fmt(c.inputVat);
+  $('kInVatRisk').textContent = 'KES '+fmt(c.inputVatRisk);
+  $('kVatRate').textContent  = String(num(TAX.vat_rate_pct));
+  [['kRateExP', 'excise_petrol'], ['kRateExD', 'excise_diesel'], ['kRateExK', 'excise_kero'],
+   ['kRateRlP', 'road_levy_petrol'], ['kRateRlD', 'road_levy_diesel']].forEach(([id, k]) => { $(id).textContent = fmt(TAX[k]); });
+  $('kRatesNote').textContent = `VAT ${num(TAX.vat_rate_pct)}% · excise petrol KES ${fmt(TAX.excise_petrol)}/L, diesel ${fmt(TAX.excise_diesel)}/L, ` +
+    `kerosene ${fmt(TAX.excise_kero)}/L · road levy petrol KES ${fmt(TAX.road_levy_petrol)}/L, diesel ${fmt(TAX.road_levy_diesel)}/L`;
+  // eTIMS: everything sold should have been declared
+  const ec = $('kEtimsCheck');
+  if (!c.etims) {
+    ec.innerHTML = c.grossRev > 0 ? '⚠️ Enter the total from the ETR daily (Z) report plus any eTIMS portal invoices for today.' : '';
+    ec.style.color = 'var(--acc2)';
+  } else if (c.etimsGap > 1) {
+    ec.innerHTML = `⚠️ KES ${fmt(c.etimsGap)} of today's sales (KES ${fmt(c.grossRev)}) hasn't been declared on eTIMS.`;
+    ec.style.color = 'var(--red)';
+  } else {
+    ec.innerHTML = c.etimsGap < -1 ? `✅ Declared KES ${fmt(-c.etimsGap)} more than the pumps sold (e.g. gas or lubricant invoices).`
+      : '✅ Everything sold today has been declared on eTIMS.';
+    ec.style.color = 'var(--acc)';
+  }
 }
 
 // ── Status pill ───────────────────────────────────────────────────────────────
@@ -1503,6 +1538,31 @@ setInterval(() => { if (document.visibilityState === 'visible' && USER) refreshA
 const ALERT_FIELDS = { asDip: 'dip_shortage_litres', asCash: 'cash_shortage_kes', asAttendant: 'attendant_shortage_kes',
   asDelivery: 'short_delivery_litres', asMpesa: 'mpesa_mismatch_kes', asRtt: 'rtt_alert_litres', asLowPetrol: 'low_stock_petrol', asLowDiesel: 'low_stock_diesel', asLowKero: 'low_stock_kero' };
 
+// ── Tax rates (admin): VAT and the excise / road levy shown on the KRA page ────
+const TAX_FIELDS = { trVat: 'vat_rate_pct', trExP: 'excise_petrol', trExD: 'excise_diesel', trExK: 'excise_kero',
+  trRlP: 'road_levy_petrol', trRlD: 'road_levy_diesel', trEtims: 'etims_gap_kes' };
+
+async function loadTaxSettings() {
+  try {
+    const { settings } = await api('GET', '/settings');
+    Object.entries(TAX_FIELDS).forEach(([id, key]) => { $(id).value = settings[key]; });
+    $('taxSum').textContent = `VAT ${settings.vat_rate_pct}% · excise petrol KES ${settings.excise_petrol}/L · eTIMS alert over KES ${settings.etims_gap_kes}`;
+  } catch (e) { /* section stays empty */ }
+}
+
+async function saveTaxSettings() {
+  if (!requireOnline('save tax rates')) return;
+  const body = {};
+  Object.entries(TAX_FIELDS).forEach(([id, key]) => { body[key] = fv(id); });
+  try {
+    await api('PUT', '/settings', body);
+    await loadTaxRates();
+    loadTaxSettings();
+    calc();
+    toast('✅ Tax rates saved — new days use them');
+  } catch (e) { toast('⚠️ ' + e.message, true); }
+}
+
 async function loadAlertSettings() {
   try {
     const { settings, email_configured } = await api('GET', '/settings');
@@ -1603,6 +1663,7 @@ async function renderReport() {
   const month = $('repMonth').value;
   $('repBody').innerHTML = '<tr><td>Loading…</td></tr>';
   let rep;
+  renderVat(month);
   try { rep = await api('GET', '/reports/monthly?month=' + month); }
   catch (e) { $('repBody').innerHTML = `<tr><td>${esc(ONLINE ? e.message : 'Reports need an internet connection.')}</td></tr>`; return; }
   const labels = Object.fromEntries(rep.fields.map(f => [f.key, f.label]));
@@ -1628,6 +1689,37 @@ async function renderReport() {
     <td class="num priv ${d.net_profit < 0 ? 'bad' : ''}">KES ${fmt(d.net_profit)}</td>
     <td>${d.approved ? '<span class="badge bg">✅ Approved</span>' : '<span class="badge by">Open</span>'}</td></tr>`).join('')
     || '<tr><td colspan="6" style="color:var(--mut)">No days recorded.</td></tr>';
+}
+
+// ── Monthly VAT summary (Reports page; managers and admins) ───────────────────
+const VAT_COLUMNS = ['days', 'gross_revenue', 'output_vat', 'input_vat', 'input_vat_at_risk', 'vat_payable', 'etims_sales', 'etims_gap'];
+
+async function renderVat(month) {
+  if (!seesProfit()) return;
+  $('vatFor').textContent = month;
+  let rep;
+  try { rep = await api('GET', '/reports/vat?month=' + month); }
+  catch (e) { $('vatBody').innerHTML = `<tr><td>${esc(ONLINE ? e.message : 'Reports need an internet connection.')}</td></tr>`; return; }
+  const labels = Object.fromEntries(rep.fields.map(f => [f.key, f.label]));
+  labels.days = 'Days';
+  $('vatHead').innerHTML = '<tr><th>Branch</th>' + VAT_COLUMNS.map(k => `<th>${esc(labels[k])}</th>`).join('') + '</tr>';
+  const row = (b, cls) => `<tr${cls ? ` class="${cls}"` : ''}><td translate="no">${esc(b.station)}</td>` +
+    VAT_COLUMNS.map(k => `<td class="num${k === 'vat_payable' && b[k] < 0 ? ' ok' : ''}${(k === 'etims_gap' || k === 'input_vat_at_risk') && b[k] > 0 ? ' bad' : ''}">${k === 'days' ? b[k] : fmt(b[k])}</td>`).join('') + '</tr>';
+  $('vatBody').innerHTML = rep.branches.length
+    ? rep.branches.map(b => row(b)).join('') + (rep.branches.length > 1 ? row(rep.totals, 'total') : '')
+    : `<tr><td colspan="${VAT_COLUMNS.length + 1}" style="color:var(--mut)">No records saved for this month.</td></tr>`;
+  const miss = rep.missing_etims;
+  $('vatMissing').innerHTML = (rep.totals.vat_payable < 0 ? `✅ Input VAT is more than output VAT this month: a credit of KES ${fmt(-rep.totals.vat_payable)} to carry forward.<br>` : '')
+    + (miss.length ? `⚠️ ${miss.length} day${miss.length === 1 ? '' : 's'} with no eTIMS sales figure: ${miss.slice(0, 8).map(d => esc(d.date.slice(5)) + ' ' + esc(d.station)).join(', ')}${miss.length > 8 ? '…' : ''}` : '');
+}
+
+function openVatSummary() {
+  tab('report');
+  setTimeout(() => $('vatBox').scrollIntoView({ behavior: 'smooth', block: 'start' }), 400);
+}
+
+function downloadVatCSV() {
+  location.href = '/api/reports/vat.csv?month=' + encodeURIComponent($('repMonth').value || todayLocal().slice(0, 7));
 }
 
 function downloadReportCSV() {
@@ -1711,6 +1803,7 @@ function populateFormFromRecord(r) {
 
   // Payments
   setVal('fMpesa', r.mpesa_amount); setVal('fMpesaTxn', r.mpesa_txns);
+  setVal('fEtims', r.etims_sales);
   setVal('fCash', r.cash_amount);
   setVal('fCredit', r.credit_amount); setVal('fCard', r.card_amount);
 
@@ -1934,9 +2027,10 @@ function addDelivery() {
   DELIVERIES.push({
     id: Date.now(), fuel: sv('dvFuel'), supplier: sv('dvSupplier'), note_no: sv('dvNote'),
     truck_reg: sv('dvTruck').toUpperCase(), litres_ordered: fv('dvOrdered'), litres_received: received,
-    dip_before: fv('dvDipBefore'), dip_after: fv('dvDipAfter')
+    dip_before: fv('dvDipBefore'), dip_after: fv('dvDipAfter'),
+    etims_invoice: sv('dvEtims'), invoice_amount: fv('dvInvoice'), vat_amount: fv('dvVat')
   });
-  ['dvSupplier','dvNote','dvTruck','dvOrdered','dvReceived','dvDipBefore','dvDipAfter'].forEach(id => $(id).value = '');
+  ['dvSupplier','dvNote','dvTruck','dvOrdered','dvReceived','dvDipBefore','dvDipAfter','dvEtims','dvInvoice','dvVat'].forEach(id => $(id).value = '');
   renderDeliveries();
   toast('🚚 Delivery added');
 }
@@ -1959,7 +2053,9 @@ function renderDeliveries() {
     const { short, dipGain, dipDiff } = deliveryChecks(d);
     return `<div class="item-row">
       <span class="grow"><b>${esc(FUEL_NAMES[d.fuel] || d.fuel)}</b> · ${fmt(d.litres_received)} L received
-        <br><small translate="no">${esc(d.supplier || 'Supplier —')} · ${esc(d.note_no || 'no note')} · ${esc(d.truck_reg || 'no truck')}</small></span>
+        <br><small translate="no">${esc(d.supplier || 'Supplier —')} · ${esc(d.note_no || 'no note')} · ${esc(d.truck_reg || 'no truck')}</small>
+        <br><small>${d.etims_invoice ? '🧾 eTIMS ' + esc(d.etims_invoice) : '<b class="bad">⚠️ No eTIMS invoice — VAT can\'t be claimed</b>'}${
+          seesProfit() && num(d.invoice_amount) ? ' · Invoice KES ' + fmt(num(d.invoice_amount)) : ''}</small></span>
       <span>${d.litres_ordered ? `Ordered ${fmt(d.litres_ordered)} L · <b class="${short > 0.5 ? 'bad' : 'ok'}">${short > 0.5 ? 'Short ' + fmt(short) + ' L' : 'Full'}</b>` : ''}
         ${dipGain !== null ? `<br><small>Tank rose ${fmt(dipGain)} L (${Math.abs(dipDiff) < 20 ? 'matches' : '<b class="bad">' + (dipDiff < 0 ? 'short ' : 'over ') + fmt(Math.abs(dipDiff)) + ' L</b>'})</small>` : ''}</span>
       <button class="btn btn-r btn-xs" onclick="deleteDelivery(${Number(d.id)})">✕</button>
@@ -2006,6 +2102,7 @@ async function saveRec() {
     diesel_dip_open: fv('dDipOpen'), diesel_delivered: fv('dDelivered'), diesel_dip_close: fv('dDipClose'),
     kero_dip_open: fv('kDipOpen'), kero_delivered: fv('kDelivered'), kero_dip_close: fv('kDipClose'),
     mpesa_amount: fv('fMpesa'),  mpesa_txns:   fv('fMpesaTxn'),
+    etims_sales:  fv('fEtims'),
     cash_amount:  fv('fCash'),   credit_amount:fv('fCredit'), card_amount:fv('fCard'),
     exp_wages:fv('eWages'), exp_elec:fv('eElec'), exp_water:fv('eWater'),
     exp_maint:fv('eMaint'), exp_lubes:fv('eLubes'), exp_misc:fv('eMisc'),
@@ -2463,7 +2560,7 @@ function loadRecs() {
         <td style="color:var(--red)">KES ${fmt(expenses)}</td>
         <td class="priv"><span class="badge ${profit >= 0 ? 'bg' : 'br'}">KES ${fmt(profit)}</span></td>
         <td>KES ${fmt(vat)}</td>
-        <td style="color:var(--acc2)">KES ${fmt(tax)}</td>
+        <td class="priv" style="color:var(--acc2)">KES ${fmt(tax)}</td>
         <td>${r.approved_at ? '<span class="badge bg">✅ Approved</span>' : '<span class="badge by">Open</span>'}${(r.opening_mismatches || []).length ? ' <span class="badge br" title="Openings differ from the previous day">⚠️</span>' : ''}</td>
         <td class="no-staff">
           <button class="btn btn-r btn-xs" data-id="${safeId}"
@@ -2771,7 +2868,7 @@ function renderAnalytics() {
       ['Avg Daily Profit', 'KES ' + fmt(totals.days > 0 ? totals.profit / totals.days : 0)]] : []),
     ['Total M-Pesa',       'KES ' + fmt(totals.mpesa)],
     ['Total Cash',         'KES ' + fmt(totals.cash)],
-    ['Total KRA Tax',      'KES ' + fmt(totals.tax)],
+    ...(seesProfit() ? [['Total VAT Payable', 'KES ' + fmt(totals.tax)]] : []),
   ].map(([k, v]) =>
     `<div class="stat-row"><span>${k}</span><span>${v}</span></div>`
   ).join('');
@@ -2811,7 +2908,7 @@ function openKra() {
   $('mPin').textContent    = sv('kPin')||'—';
   $('mBiz').textContent    = sv('kBiz')||'—';
   $('mPeriod').textContent = sv('kPeriod')||'—';
-  $('mRType').textContent  = sv('kReturnType')||'—';
+  $('mRType').textContent  = 'VAT (monthly)';
   $('mEtr').textContent    = sv('kEtr')||'—';
   $('mDate').textContent   = sv('fDate')||new Date().toLocaleDateString(LOCALE);
   $('mPL').textContent     = fmtL(c.pL)+' L';
@@ -2820,11 +2917,11 @@ function openKra() {
   $('mGross').textContent  = 'KES '+fmt(c.grossRev);
   $('mExVat').textContent  = 'KES '+fmt(c.exVat);
   $('mVat').textContent    = 'KES '+fmt(c.outputVAT);
-  $('mExcP').textContent   = 'KES '+fmt(c.excP);
-  $('mExcD').textContent   = 'KES '+fmt(c.excD);
-  $('mExcK').textContent   = 'KES '+fmt(c.excK);
-  $('mRLP').textContent    = 'KES '+fmt(c.rlP);
-  $('mRLD').textContent    = 'KES '+fmt(c.rlD);
+  $('mInVat').textContent  = 'KES '+fmt(c.inputVat);
+  $('mInVatRisk').textContent = 'KES '+fmt(c.inputVatRisk);
+  $('mEtims').textContent  = c.etims ? 'KES '+fmt(c.etims) + (c.etimsGap > 1 ? ` (KES ${fmt(c.etimsGap)} short)` : ' ✅') : 'Not entered';
+  $('mExc').textContent    = `KES ${fmt(c.excP)} / ${fmt(c.excD)} / ${fmt(c.excK)}`;
+  $('mRL').textContent     = `KES ${fmt(c.rlP)} / ${fmt(c.rlD)}`;
   $('mTotal').textContent  = 'KES '+fmt(c.totalTax);
   $('mRemarks').textContent = sv('kRemarks')||'None';
   $('kraOverlay').classList.add('open');

@@ -192,7 +192,14 @@ const SW = {
   // ── Record details ──
   'Fuel Sales': 'Mauzo ya Mafuta',
   'Pump Sales Meter Cross-Check': 'Ukaguzi wa Mita ya Mauzo', 'Branches (Admin)': 'Matawi (Msimamizi)', 'New branch name': 'Jina la tawi jipya',
-  'Add Branch': 'Ongeza Tawi', 'Returned to Tank (RTT)': 'Yaliyorudishwa Tankini (RTT)', 'Reason for RTT': 'Sababu ya RTT',
+  'Add Branch': 'Ongeza Tawi', 'KRA Tax — VAT & eTIMS': 'Kodi ya KRA — VAT na eTIMS', "Today's VAT, the eTIMS check, and the monthly summary for your iTax VAT return": 'VAT ya leo, ukaguzi wa eTIMS, na muhtasari wa mwezi wa marejesho ya VAT kwenye iTax', "Today's VAT": 'VAT ya Leo', 'eTIMS Check': 'Ukaguzi wa eTIMS', 'VAT Payable': 'VAT Inayolipwa',
+  'Sales declared on eTIMS today (KES)': 'Mauzo yaliyotangazwa kwenye eTIMS leo (KES)', 'Tax Rates': 'Viwango vya Kodi',
+  'Supplier eTIMS Invoice No.': 'Nambari ya Ankara ya eTIMS ya Msambazaji', 'Invoice Amount incl. VAT (KES)': 'Kiasi cha Ankara pamoja na VAT (KES)',
+  'VAT on Invoice (KES)': 'VAT kwenye Ankara (KES)', 'Monthly VAT Summary': 'Muhtasari wa VAT wa Mwezi', 'VAT for iTax': 'VAT kwa iTax',
+  'Download VAT Summary': 'Pakua Muhtasari wa VAT', "Preview Today's Tax": 'Angalia Kodi ya Leo', 'Save Tax Rates': 'Hifadhi Viwango vya Kodi',
+  'Everything sold today has been declared on eTIMS.': 'Mauzo yote ya leo yametangazwa kwenye eTIMS.',
+  'Output − input VAT': 'VAT ya mauzo − VAT ya manunuzi', 'Not entered': 'Haijaingizwa',
+  'Enter the total from the ETR daily (Z) report plus any eTIMS portal invoices for today.': 'Ingiza jumla ya ripoti ya kila siku (Z) ya ETR pamoja na ankara za tovuti ya eTIMS za leo.', 'Returned to Tank (RTT)': 'Yaliyorudishwa Tankini (RTT)', 'Reason for RTT': 'Sababu ya RTT',
   'RTT — returned to tank (L), if any': 'RTT — yaliyorudishwa tankini (L), kama yapo',
   'A pump returns more than (L) to tank': 'Pampu inarudisha zaidi ya (L) tankini',
   "These litres went through the meters for a pump test or calibration and were poured back, so they aren't counted as sold. Say why — large amounts raise an alert.":
@@ -309,6 +316,7 @@ const SW_PATTERNS = [
   [/^Margin: (.+)$/, 'Kiwango cha faida: $1'],
   [/^Branch added — (.+)$/, 'Tawi limeongezwa — $1'],
   [/^Branch removed — (.+)$/, 'Tawi limeondolewa — $1'],
+  [/^KES ([\d.,]+) of today's sales \(KES ([\d.,]+)\) hasn't been declared on eTIMS\.$/, 'KES $1 ya mauzo ya leo (KES $2) hayajatangazwa kwenye eTIMS.'],
   [/^([\d.,]+) L returned$/, 'Lita $1 zimerudishwa'],
   [/^(\d+) branch(?:es)?: (.+)$/, 'Matawi $1: $2'],
   [/^(\d+) users? · (\d+) admin · (\d+) manager · (\d+) staff$/, 'Watumiaji $1 · msimamizi $2 · meneja $3 · wafanyakazi $4'],

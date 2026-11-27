@@ -68,6 +68,25 @@ be wiped on every restart. Each push to the chosen branch redeploys automaticall
 add a volume mounted at `/data`, and set `PK_DB=/data/petrokenya.sqlite3`,
 `PK_ADMIN_USER`, `PK_ADMIN_PASSWORD`, `PK_SECURE_COOKIE=1` and `PK_TRUST_PROXY=1`.
 
+## KRA: VAT and eTIMS
+
+- **VAT payable = output VAT − input VAT.** Output VAT is worked out from sales (prices include VAT).
+  Input VAT comes from fuel deliveries that carry the supplier's **eTIMS invoice number** (enter the
+  invoice amount, and its VAT if known, with the delivery). Deliveries without an eTIMS invoice are
+  shown as **input VAT at risk**, since KRA may refuse to let you claim it.
+- **Excise duty and road levy** are collected before fuel reaches the station (they're in the buying
+  price), so they're shown on the KRA page for information and not added to what's payable.
+- **eTIMS check:** each day, enter the total declared on eTIMS (ETR daily Z report + eTIMS portal
+  invoices). The KRA page compares it with sales from the pumps, and a shortfall of more than
+  KES 500 (Tax Rates) raises an **eTIMS sales declared short** alert.
+- **Reports → 🧾 VAT for iTax:** the month per branch (output VAT, input VAT, VAT payable or credit
+  to carry forward, eTIMS declared, days with no eTIMS figure), with a download for copying into the
+  iTax VAT return. iTax has no public interface for filing, so the return itself is filed on iTax.
+- Rates are set by the admin under **👤 → 🧾 Tax Rates**; each saved day keeps the rates it used.
+  Staff never see input VAT, VAT payable or supplier invoice amounts (they reveal buying prices).
+
+Confirm the figures with your accountant before filing.
+
 ## M-Pesa (Safaricom Daraja)
 
 Safaricom reports every payment to a branch's till or paybill to the app the moment it's made.
