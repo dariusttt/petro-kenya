@@ -43,10 +43,7 @@ DEFAULT_SETTINGS = {
     "mpesa_mismatch_kes": 100,       # typed M-Pesa total differs this much from what Safaricom reported
     "rtt_alert_litres": 20,          # a pump had more than this returned to tank (RTT) in a day
     "etims_gap_kes": 500,            # sales declared on eTIMS fall this much short of pump sales
-    # Tax rates in force (check KRA's current rates); excise and road levy are per litre and only
-    # shown for information, since they're already in the station's buying price
-    "vat_rate_pct": 16, "excise_petrol": 21.95, "excise_diesel": 7.21, "excise_kero": 7.19,
-    "road_levy_petrol": 18.0, "road_levy_diesel": 13.19,
+    "vat_rate_pct": 16,              # VAT rate in force (check KRA's current rate)
 }
 
 
@@ -524,7 +521,6 @@ REPORT_FIELDS = [
     ("total_expenses", "Expenses (KES)"), ("net_profit", "Net profit (KES)"),
     ("output_vat", "Output VAT (KES)"), ("input_vat", "Input VAT, eTIMS invoices (KES)"),
     ("total_tax", "VAT payable (KES)"), ("etims_sales", "Declared on eTIMS (KES)"),
-    ("total_excise", "Excise in buying price (KES)"),
     ("mpesa_amount", "M-Pesa (KES)"), ("cash_amount", "Cash (KES)"), ("card_amount", "Card (KES)"),
     ("credit_amount", "Credit sales (KES)"), ("collection_variance", "Sales not collected (KES)"),
     ("attendant_shortage_total", "Attendant shortages (KES)"),

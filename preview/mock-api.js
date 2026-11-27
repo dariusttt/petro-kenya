@@ -26,11 +26,10 @@
       rec[fuel + '_' + x] = r2(PUMPS.filter(p => p[1] === fuel).reduce((s, [id]) => s + num(rec[pf(id, x)]), 0)); }); });
   }
   const FUEL_NAMES = { petrol: 'Petrol', diesel: 'Diesel', kero: 'Kerosene' };
-  const VAT = 0.16, EX = { petrol: 21.95, diesel: 7.21, kero: 7.19 };
+  const VAT = 0.16;
   const DEFAULT_SETTINGS = { dip_shortage_litres: 50, cash_shortage_kes: 1000, attendant_shortage_kes: 500,
     short_delivery_litres: 50, low_stock_petrol: 3000, low_stock_diesel: 3000, low_stock_kero: 1000, alert_emails: '', backup_emails: '',
-    mpesa_mismatch_kes: 100, rtt_alert_litres: 20, etims_gap_kes: 500, vat_rate_pct: 16, excise_petrol: 21.95,
-    excise_diesel: 7.21, excise_kero: 7.19, road_levy_petrol: 18, road_levy_diesel: 13.19 };
+    mpesa_mismatch_kes: 100, rtt_alert_litres: 20, etims_gap_kes: 500, vat_rate_pct: 16 };
 
   const num = v => { const f = parseFloat(v); return Number.isFinite(f) ? f : 0; };
   const r2 = v => Math.round((v + Number.EPSILON) * 100) / 100;
@@ -82,20 +81,19 @@
     const expMisc = misc.length ? r2(misc.reduce((s, i) => s + num(i.amount), 0)) : g('exp_misc');
     const totalExp = r2(g('exp_wages') + g('exp_elec') + g('exp_water') + g('exp_maint') + g('exp_lubes') + expMisc);
     const net = r2(gross - totalFC - totalExp);
-    // VAT payable = output − input VAT (deliveries with a supplier eTIMS invoice); excise is in the buying price
+    // VAT payable = output − input VAT (deliveries with a supplier eTIMS invoice)
     const vr = raw.vat_rate !== undefined ? num(raw.vat_rate) : VAT;
     const exVat = r2(gross / (1 + vr)), vat = r2(gross - exVat);
     let inVat = 0, inRisk = 0;
     (raw.deliveries || []).forEach(d => { const v = num(d.vat_amount) || num(d.invoice_amount) * vr / (1 + vr);
       if (String(d.etims_invoice || '').trim()) inVat += v; else inRisk += v; });
-    const excise = r2(L.petrol * EX.petrol + L.diesel * EX.diesel + L.kero * EX.kero);
     const gaps = (raw.attendants || []).map(a => num(a.expected) - num(a.cash) - num(a.mpesa));
     return Object.assign(out, {
       total_rtt: r2(PUMPS.reduce((t, [id]) => t + Math.max(0, num(raw[pf(id, 'rtt')])), 0)),
       total_litres: totalL, gas_lube_revenue: gasLube, gross_revenue: gross, total_fuel_cost: totalFC,
       exp_misc: expMisc, total_expenses: totalExp, total_cost: r2(totalFC + totalExp), net_profit: net,
       profit_margin: gross > 0 ? r2(net / gross * 100) : 0, collected, collection_variance: r2(gross - collected),
-      output_vat: vat, total_excise: excise, taxable_sales: exVat, vat_rate: vr,
+      output_vat: vat, taxable_sales: exVat, vat_rate: vr,
       input_vat: r2(inVat), input_vat_at_risk: r2(inRisk), vat_payable: r2(vat - inVat), total_tax: r2(vat - inVat),
       etims_gap: num(raw.etims_sales) > 0 ? r2(gross - num(raw.etims_sales)) : 0,
       delivery_shortfall_litres: r2((raw.deliveries || []).reduce((s, d) =>
@@ -675,7 +673,7 @@
     }
     if (path === '/api/backups/email') fail(400, "The website preview can't send email — this works once the app is hosted");
     if (path === '/api/settings/test-email') fail(400, "The website preview can't send email — this works once the app is hosted");
-    if (path === '/api/tax-rates') return { vat_rate_pct: 16, excise_petrol: 21.95, excise_diesel: 7.21, excise_kero: 7.19, road_levy_petrol: 18, road_levy_diesel: 13.19 };
+    if (path === '/api/tax-rates') return { vat_rate_pct: 16 };
     if (path.startsWith('/api/reports/vat')) {
       if (pu.role === 'staff') fail(403, 'The VAT summary is for branch managers and admins');
       const month = q.month || kenyaToday().slice(0, 7), st = scope(pu, q.station);

@@ -109,11 +109,9 @@ mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("image/svg+xml", ".svg")
 
 # ── Statutory rates (same constants as the dashboard) ─────────────────────────
-# Defaults only: the admin sets the rates in force under Account → Tax Rates, and each saved day
-# keeps the rates it was worked out with
+# Default only: the admin sets the VAT rate in force under Account → Tax Rates, and each saved day
+# keeps the rate it was worked out with
 VAT = 0.16
-EX_P, EX_D, EX_K = 21.95, 7.21, 7.19   # excise per litre — already in the buying price
-RL_P, RL_D = 18.00, 13.19              # road levy per litre — already in the buying price
 
 # The station's pumps: three petrol, three diesel and one kerosene. Each has its own
 # litres meter and sales (KES) meter; a fuel's totals are the sum over its pumps.
@@ -155,7 +153,7 @@ CSV_COLS = [
     "petrol_litres", "diesel_litres", "kero_litres", "total_litres",
     "gross_revenue", "mpesa_amount", "cash_amount", "credit_amount", "card_amount",
     "total_expenses", "net_profit", "profit_margin",
-    "output_vat", "input_vat", "total_tax", "etims_sales", "etims_gap", "total_excise",
+    "output_vat", "input_vat", "total_tax", "etims_sales", "etims_gap",
     "kra_pin", "kra_business", "kra_period", "kra_return_type",
     "created_at",
 ]
@@ -327,11 +325,6 @@ def compute(raw):
         else:
             input_at_risk += vat
     vat_payable = r2(outputVAT - input_vat)
-    # Excise duty and road levy are collected before the fuel reaches the station (they're in the
-    # buying price), so they're shown for information and not added to what the station pays
-    excP, excD, excK = (r2(pL * rate("rate_excise_petrol", EX_P)), r2(dL * rate("rate_excise_diesel", EX_D)),
-                        r2(kL * rate("rate_excise_kero", EX_K)))
-    totalExcise = r2(excP + excD + excK)
     etims = g("etims_sales")
 
     return {
@@ -359,10 +352,6 @@ def compute(raw):
         "till_balance": r2(cash + g("float_amount") - g("banked_amount")),
         "taxable_sales": exVat,
         "output_vat": outputVAT,
-        "excise_petrol": excP, "excise_diesel": excD, "excise_kero": excK,
-        "total_excise": totalExcise,
-        "road_levy_petrol": r2(pL * rate("rate_road_levy_petrol", RL_P)),
-        "road_levy_diesel": r2(dL * rate("rate_road_levy_diesel", RL_D)),
         "vat_rate": vat_rate,
         "input_vat": r2(input_vat), "input_vat_at_risk": r2(input_at_risk),
         "vat_payable": vat_payable,
@@ -1376,8 +1365,6 @@ class Handler(BaseHTTPRequestHandler):
         # The tax rates in force (Account → Tax Rates), kept with the day
         rates = self.settings.all()
         rec["vat_rate"] = num(rates["vat_rate_pct"]) / 100
-        for k in ("excise_petrol", "excise_diesel", "excise_kero", "road_levy_petrol", "road_levy_diesel"):
-            rec["rate_" + k] = num(rates[k])
         if not rec.get("mpesa_till"):
             # The branch's own number, as set by the admin for M-Pesa
             till = next((b["shortcode"] for b in self.mpesa.branches() if b["station"] == rec["station"]), "")
@@ -1821,7 +1808,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/tax-rates" and m == "GET":
             st = self.settings.all()
             return self._json(HTTPStatus.OK, {k: st[k] for k in (
-                "vat_rate_pct", "excise_petrol", "excise_diesel", "excise_kero", "road_levy_petrol", "road_levy_diesel")})
+                "vat_rate_pct",)})
         if path in ("/api/reports/vat", "/api/reports/vat.csv") and m == "GET":
             if user["role"] == "staff":
                 raise ApiError(HTTPStatus.FORBIDDEN, "The VAT summary is for branch managers and admins")

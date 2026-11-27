@@ -181,7 +181,6 @@ class ServerTest(ServerCase):
         self.assertEqual(c["total_expenses"], 1200)            # wages + misc items
         self.assertEqual(c["net_profit"], 29550 - (17400 + 7850) - 1200)
         self.assertEqual(c["output_vat"], round(29550 - round(29550 / 1.16, 2), 2))
-        self.assertEqual(c["total_excise"], round(100 * 21.95 + 50 * 7.21, 2))
         self.assertEqual(c["collection_variance"], 29550 - 27550)
 
     def test_create_upsert_get_delete(self):
@@ -1267,16 +1266,16 @@ class TaxTest(ServerCase):
         self.assertEqual(rec["input_vat"], 160000)                            # only the eTIMS-invoiced delivery
         self.assertEqual(rec["input_vat_at_risk"], 32000)
         self.assertEqual(rec["vat_payable"], -144000)                         # a credit this day
-        self.assertEqual(rec["total_tax"], rec["vat_payable"])                # excise is no longer added
-        self.assertGreater(rec["total_excise"], 0)                            # …but still shown
+        self.assertEqual(rec["total_tax"], rec["vat_payable"])                # VAT only
+        self.assertNotIn("total_excise", rec)
         self.assertEqual(rec["etims_gap"], 16000)
         alerts = [a["message"] for a in self.admin.req("GET", "/api/alerts")[1]["alerts"] if a["kind"] == "etims_short"]
         self.assertEqual(len(alerts), 1)
         self.assertIn("16,000.00 less", alerts[0])
         # the admin's rates are used and kept with the day
-        self.admin.req("PUT", "/api/settings", {"vat_rate_pct": 8, "excise_petrol": 10})
+        self.admin.req("PUT", "/api/settings", {"vat_rate_pct": 8})
         rec = mgr.req("POST", "/api/records", {**self.DAY, "etims_sales": 116000})[1]["record"]
-        self.assertEqual((rec["vat_rate"], rec["total_excise"]), (0.08, 5000))
+        self.assertEqual((rec["vat_rate"], rec["output_vat"]), (0.08, round(116000 - round(116000 / 1.08, 2), 2)))
         self.assertFalse([a for a in self.admin.req("GET", "/api/alerts")[1]["alerts"] if a["kind"] == "etims_short"])
         self.assertEqual(Client(self.base).login("kisumu").req("GET", "/api/tax-rates")[1]["vat_rate_pct"], 8)
 
