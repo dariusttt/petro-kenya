@@ -45,6 +45,7 @@ API (all JSON; everything except /api/health and /api/login needs a signed-in se
     GET    /api/alerts?all=1             POST /api/alerts/read {ids|all}   (manager, admin)
     GET|PUT /api/settings   POST /api/settings/test-email   (admin)
     GET    /api/reports/monthly?month=YYYY-MM&station=   (.csv for a download)
+    GET    /api/reports/vat?month=YYYY-MM&station=       (.csv; managers and admins)   GET /api/tax-rates
     POST   /api/uploads {data: base64 photo, station}   GET /api/uploads/<id>
     GET|POST /api/backups   POST /api/backups/email   GET /api/backups/<name>.zip|.pdf   (admin)
     GET    /api/analytics?station=       GET /api/export.csv?station=
@@ -108,9 +109,11 @@ mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("image/svg+xml", ".svg")
 
 # ── Statutory rates (same constants as the dashboard) ─────────────────────────
+# Defaults only: the admin sets the rates in force under Account → Tax Rates, and each saved day
+# keeps the rates it was worked out with
 VAT = 0.16
-EX_P, EX_D, EX_K = 21.95, 7.21, 7.19   # excise per litre
-RL_P, RL_D = 18.00, 13.19              # road levy per litre
+EX_P, EX_D, EX_K = 21.95, 7.21, 7.19   # excise per litre — already in the buying price
+RL_P, RL_D = 18.00, 13.19              # road levy per litre — already in the buying price
 
 # The station's pumps: three petrol, three diesel and one kerosene. Each has its own
 # litres meter and sales (KES) meter; a fuel's totals are the sum over its pumps.
@@ -135,6 +138,7 @@ NUM_FIELDS = PUMP_FIELDS + PUMP_RTT_FIELDS + [
     "diesel_dip_open", "diesel_delivered", "diesel_dip_close",
     "kero_dip_open", "kero_delivered", "kero_dip_close",
     "mpesa_amount", "mpesa_txns", "cash_amount", "credit_amount", "card_amount",
+    "etims_sales",
     "float_amount", "banked_amount",
     "exp_wages", "exp_elec", "exp_water", "exp_maint", "exp_lubes", "exp_misc",
 ]
@@ -151,7 +155,7 @@ CSV_COLS = [
     "petrol_litres", "diesel_litres", "kero_litres", "total_litres",
     "gross_revenue", "mpesa_amount", "cash_amount", "credit_amount", "card_amount",
     "total_expenses", "net_profit", "profit_margin",
-    "output_vat", "total_excise", "total_tax",
+    "output_vat", "input_vat", "total_tax", "etims_sales", "etims_gap", "total_excise",
     "kra_pin", "kra_business", "kra_period", "kra_return_type",
     "created_at",
 ]
@@ -164,7 +168,9 @@ PRIVATE_KEYS = frozenset(
     ["cost", "total_fuel_cost", "total_cost", "net_profit", "profit_margin", "profit_per_litre",
      "avg_daily_profit"] + [f + "_cost" for f in FUELS] + [f + "_margin" for f in FUELS]
     # …nor the branch's M-Pesa till or paybill number
-    + ["mpesa_till", "shortcode"])
+    + ["mpesa_till", "shortcode"]
+    # …nor what fuel was bought for (supplier invoices), nor the VAT figures that reveal it
+    + ["invoice_amount", "vat_amount", "input_vat", "input_vat_at_risk", "vat_payable", "total_tax", "tax"])
 
 
 def hide_private(value):
@@ -306,10 +312,27 @@ def compute(raw):
     totalCost = r2(totalFC + totalExp)
     netProfit = r2(grossRev - totalCost)
 
-    exVat = r2(grossRev / (1 + VAT))
+    # VAT: prices include it. What the station owes is the VAT on its sales (output) less the VAT
+    # on fuel bought with a supplier's eTIMS invoice (input); without an eTIMS invoice KRA may refuse
+    # the input VAT, so that part is shown separately as "at risk".
+    rate = lambda k, d: num(raw.get(k)) if raw.get(k) not in (None, "") else d
+    vat_rate = rate("vat_rate", VAT)
+    exVat = r2(grossRev / (1 + vat_rate))
     outputVAT = r2(grossRev - exVat)
-    excP, excD, excK = r2(pL * EX_P), r2(dL * EX_D), r2(kL * EX_K)
+    input_vat = input_at_risk = 0.0
+    for d in deliveries:
+        vat = num(d.get("vat_amount")) or (num(d.get("invoice_amount")) * vat_rate / (1 + vat_rate))
+        if str(d.get("etims_invoice") or "").strip():
+            input_vat += vat
+        else:
+            input_at_risk += vat
+    vat_payable = r2(outputVAT - input_vat)
+    # Excise duty and road levy are collected before the fuel reaches the station (they're in the
+    # buying price), so they're shown for information and not added to what the station pays
+    excP, excD, excK = (r2(pL * rate("rate_excise_petrol", EX_P)), r2(dL * rate("rate_excise_diesel", EX_D)),
+                        r2(kL * rate("rate_excise_kero", EX_K)))
     totalExcise = r2(excP + excD + excK)
+    etims = g("etims_sales")
 
     return {
         "petrol_litres": r2(pL), "diesel_litres": r2(dL), "kero_litres": r2(kL),
@@ -338,8 +361,13 @@ def compute(raw):
         "output_vat": outputVAT,
         "excise_petrol": excP, "excise_diesel": excD, "excise_kero": excK,
         "total_excise": totalExcise,
-        "road_levy_petrol": r2(pL * RL_P), "road_levy_diesel": r2(dL * RL_D),
-        "total_tax": r2(outputVAT + totalExcise),
+        "road_levy_petrol": r2(pL * rate("rate_road_levy_petrol", RL_P)),
+        "road_levy_diesel": r2(dL * rate("rate_road_levy_diesel", RL_D)),
+        "vat_rate": vat_rate,
+        "input_vat": r2(input_vat), "input_vat_at_risk": r2(input_at_risk),
+        "vat_payable": vat_payable,
+        "total_tax": vat_payable,
+        "etims_gap": r2(grossRev - etims) if etims > 0 else 0,
         "delivery_shortfall_litres": delivery_short,
         "attendant_shortage_total": r2(sum(g for g in att_gap if g > 0)),
         "attendant_excess_total": r2(-sum(g for g in att_gap if g < 0)),
@@ -414,6 +442,7 @@ def opening_mismatches(rec, previous):
 # Item fields that must be numbers; everything else in an item is kept as short text
 ITEM_NUM_FIELDS = {"id", "qty", "price", "amount", "customer_id",
                    "litres_ordered", "litres_received", "dip_before", "dip_after",
+                   "invoice_amount", "vat_amount",
                    "expected", "cash", "mpesa"}
 
 
@@ -1338,6 +1367,17 @@ class Handler(BaseHTTPRequestHandler):
             for fuel in FUELS:
                 rec[fuel + "_cost"] = num(prev.get(fuel + "_cost"))
             rec["mpesa_till"] = (existing or {}).get("mpesa_till") or ""   # staff never see or send it
+            # Staff never see supplier invoice amounts, so keep the ones already on the day's deliveries
+            before = {str(d.get("id")): d for d in (existing or {}).get("deliveries") or []}
+            for d in rec.get("deliveries") or []:
+                old = before.get(str(d.get("id"))) or {}
+                for k in ("invoice_amount", "vat_amount"):
+                    d[k] = num(old.get(k))
+        # The tax rates in force (Account → Tax Rates), kept with the day
+        rates = self.settings.all()
+        rec["vat_rate"] = num(rates["vat_rate_pct"]) / 100
+        for k in ("excise_petrol", "excise_diesel", "excise_kero", "road_levy_petrol", "road_levy_diesel"):
+            rec["rate_" + k] = num(rates[k])
         if not rec.get("mpesa_till"):
             # The branch's own number, as set by the admin for M-Pesa
             till = next((b["shortcode"] for b in self.mpesa.branches() if b["station"] == rec["station"]), "")
@@ -1776,6 +1816,37 @@ class Handler(BaseHTTPRequestHandler):
             kind = "application/pdf" if full.endswith(".pdf") else "application/zip"
             return self._send(HTTPStatus.OK, data, kind,
                               {"Content-Disposition": 'attachment; filename="%s"' % os.path.basename(full)})
+
+        # ── Tax ──
+        if path == "/api/tax-rates" and m == "GET":
+            st = self.settings.all()
+            return self._json(HTTPStatus.OK, {k: st[k] for k in (
+                "vat_rate_pct", "excise_petrol", "excise_diesel", "excise_kero", "road_levy_petrol", "road_levy_diesel")})
+        if path in ("/api/reports/vat", "/api/reports/vat.csv") and m == "GET":
+            if user["role"] == "staff":
+                raise ApiError(HTTPStatus.FORBIDDEN, "The VAT summary is for branch managers and admins")
+            month = q.get("month") or today()[:7]
+            if not re.fullmatch(r"\d{4}-\d{2}", month):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "month must look like 2026-10")
+            station = self._station_scope(user, q.get("station"))
+            report = business.vat_report(
+                self.store.list(station, date_from=month + "-01", date_to=month + "-31"), month)
+            if path.endswith(".csv"):
+                buf = io.StringIO()
+                w = csv.writer(buf, lineterminator="\n")
+                w.writerow(["VAT summary for %s — for copying into the iTax VAT return" % month])
+                w.writerow(["Branch", "Days"] + [f["label"] for f in report["fields"]])
+                for b in report["branches"] + [report["totals"]]:
+                    w.writerow([csv_cell(b["station"]), b["days"]] + [b[f["key"]] for f in report["fields"]])
+                if report["missing_etims"]:
+                    w.writerow([])
+                    w.writerow(["Days with no eTIMS sales figure"])
+                    for d in report["missing_etims"]:
+                        w.writerow([d["date"], csv_cell(d["station"])])
+                return self._send(HTTPStatus.OK, buf.getvalue().encode("utf-8"), "text/csv; charset=utf-8",
+                                  {"Content-Disposition": 'attachment; filename="PetroKenya_VAT_%s_%s.csv"'
+                                   % ((station or "All-Branches").replace(" ", "-"), month)})
+            return self._json(HTTPStatus.OK, report)
 
         # ── Monthly report ──
         if path in ("/api/reports/monthly", "/api/reports/monthly.csv") and m == "GET":

@@ -42,6 +42,11 @@ DEFAULT_SETTINGS = {
     "backup_emails": "",             # comma-separated addresses that get the nightly backup
     "mpesa_mismatch_kes": 100,       # typed M-Pesa total differs this much from what Safaricom reported
     "rtt_alert_litres": 20,          # a pump had more than this returned to tank (RTT) in a day
+    "etims_gap_kes": 500,            # sales declared on eTIMS fall this much short of pump sales
+    # Tax rates in force (check KRA's current rates); excise and road levy are per litre and only
+    # shown for information, since they're already in the station's buying price
+    "vat_rate_pct": 16, "excise_petrol": 21.95, "excise_diesel": 7.21, "excise_kero": 7.19,
+    "road_levy_petrol": 18.0, "road_levy_diesel": 13.19,
 }
 
 
@@ -225,6 +230,11 @@ def evaluate_alerts(rec, settings):
             note = str(rec.get("rtt_note") or "").strip()
             out.append(("rtt", pid, "Pump %s: %s L returned to tank (RTT)%s — %s"
                         % (pid, "{:,.0f}".format(litres), " — reason: " + note[:80] if note else ", no reason given", where)))
+    etims = num(rec.get("etims_sales"))
+    if etims > 0 and num(rec.get("gross_revenue")) - etims > settings["etims_gap_kes"]:
+        out.append(("etims_short", "day", "Sales declared on eTIMS (KES %s) are KES %s less than sales from the pumps "
+                    "(KES %s) — %s" % ("{:,.2f}".format(etims), "{:,.2f}".format(num(rec.get("gross_revenue")) - etims),
+                                       "{:,.2f}".format(num(rec.get("gross_revenue"))), where)))
     if rec.get("mpesa_received_count"):
         diff = num(rec.get("mpesa_amount")) - num(rec.get("mpesa_received"))
         if abs(diff) > settings["mpesa_mismatch_kes"]:
@@ -238,7 +248,7 @@ ALERT_TITLES = {
     "dip_shortage": "Tank stock short", "low_stock": "Low tank stock", "cash_shortage": "Cash short",
     "attendant_shortage": "Attendant short", "opening_mismatch": "Opening readings changed",
     "short_delivery": "Short delivery", "mpesa_mismatch": "M-Pesa doesn't match Safaricom",
-    "rtt": "Large return to tank (RTT)",
+    "rtt": "Large return to tank (RTT)", "etims_short": "eTIMS sales declared short",
 }
 
 
@@ -512,7 +522,9 @@ REPORT_FIELDS = [
     ("petrol_litres", "Petrol litres"), ("diesel_litres", "Diesel litres"), ("kero_litres", "Kerosene litres"),
     ("total_litres", "Total litres"), ("gross_revenue", "Sales (KES)"), ("total_fuel_cost", "Fuel cost (KES)"),
     ("total_expenses", "Expenses (KES)"), ("net_profit", "Net profit (KES)"),
-    ("output_vat", "VAT (KES)"), ("total_excise", "Excise (KES)"), ("total_tax", "Tax total (KES)"),
+    ("output_vat", "Output VAT (KES)"), ("input_vat", "Input VAT, eTIMS invoices (KES)"),
+    ("total_tax", "VAT payable (KES)"), ("etims_sales", "Declared on eTIMS (KES)"),
+    ("total_excise", "Excise in buying price (KES)"),
     ("mpesa_amount", "M-Pesa (KES)"), ("cash_amount", "Cash (KES)"), ("card_amount", "Card (KES)"),
     ("credit_amount", "Credit sales (KES)"), ("collection_variance", "Sales not collected (KES)"),
     ("attendant_shortage_total", "Attendant shortages (KES)"),
@@ -887,6 +899,35 @@ class Mpesa:
             "ShortCode": b["shortcode"], "Amount": amount, "Msisdn": "254708374149",
             "CommandID": "CustomerPayBillOnline" if b["type"] == "paybill" else "CustomerBuyGoodsOnline",
             "BillRefNumber": "PKTEST" if b["type"] == "paybill" else None})
+
+
+# ── Monthly VAT summary, for filing on iTax ───────────────────────────────────
+VAT_FIELDS = [
+    ("gross_revenue", "Sales incl. VAT (KES)"), ("taxable_sales", "Taxable sales excl. VAT (KES)"),
+    ("output_vat", "Output VAT (KES)"), ("input_vat", "Input VAT — with eTIMS invoices (KES)"),
+    ("input_vat_at_risk", "Input VAT at risk — no eTIMS invoice (KES)"), ("vat_payable", "VAT payable (KES)"),
+    ("etims_sales", "Sales declared on eTIMS (KES)"), ("etims_gap", "Not declared on eTIMS (KES)"),
+]
+
+
+def vat_report(records, month):
+    """Per branch and in total: the month's VAT figures, and the days with no eTIMS figure."""
+    branches = {}
+    missing = []
+    for r in sorted(records, key=lambda x: (x["report_date"], x["station"])):
+        b = branches.setdefault(r["station"], {"station": r["station"], "days": 0,
+                                               **{k: 0.0 for k, _ in VAT_FIELDS}})
+        b["days"] += 1
+        for k, _ in VAT_FIELDS:
+            b[k] += num(r.get(k))
+        if num(r.get("gross_revenue")) > 0 and num(r.get("etims_sales")) <= 0:
+            missing.append({"date": r["report_date"], "station": r["station"]})
+    rows = [{k: (r2(v) if isinstance(v, float) else v) for k, v in b.items()}
+            for b in sorted(branches.values(), key=lambda x: x["station"])]
+    totals = {"station": "All branches", "days": sum(b["days"] for b in rows),
+              **{k: r2(sum(b[k] for b in rows)) for k, _ in VAT_FIELDS}}
+    return {"month": month, "fields": [{"key": k, "label": l} for k, l in VAT_FIELDS],
+            "branches": rows, "totals": totals, "missing_etims": missing}
 
 
 # ── The readable side of a backup: a PDF of every saved day ────────────────────

@@ -1249,3 +1249,60 @@ class MpesaTest(ServerCase):
             self.mpesa.key, self.mpesa.secret, self.mpesa.base, self.mpesa._token, self.mpesa.env = saved
             srv.shutdown()
             srv.server_close()
+
+
+class TaxTest(ServerCase):
+    """VAT payable = output VAT − input VAT from suppliers' eTIMS invoices; eTIMS sales are checked."""
+    DAY = {"report_date": "2026-10-14", "station": "Moiben Branch", "petrol_price": 232,
+           "pump_p1_open": 1000, "pump_p1_close": 1500, "cash_amount": 116000,
+           "deliveries": [
+               {"id": 1, "fuel": "petrol", "litres_received": 5000, "etims_invoice": "KRAINV-001", "invoice_amount": 1160000},
+               {"id": 2, "fuel": "petrol", "litres_received": 1000, "invoice_amount": 232000}]}
+
+    def test_vat_payable_and_eTIMS_check(self):
+        mgr = Client(self.base).login("kmanager")
+        rec = mgr.req("POST", "/api/records", {**self.DAY, "etims_sales": 100000})[1]["record"]
+        self.assertEqual(rec["gross_revenue"], 116000)                       # 500 L × 232
+        self.assertEqual((rec["taxable_sales"], rec["output_vat"]), (100000, 16000))
+        self.assertEqual(rec["input_vat"], 160000)                            # only the eTIMS-invoiced delivery
+        self.assertEqual(rec["input_vat_at_risk"], 32000)
+        self.assertEqual(rec["vat_payable"], -144000)                         # a credit this day
+        self.assertEqual(rec["total_tax"], rec["vat_payable"])                # excise is no longer added
+        self.assertGreater(rec["total_excise"], 0)                            # …but still shown
+        self.assertEqual(rec["etims_gap"], 16000)
+        alerts = [a["message"] for a in self.admin.req("GET", "/api/alerts")[1]["alerts"] if a["kind"] == "etims_short"]
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("16,000.00 less", alerts[0])
+        # the admin's rates are used and kept with the day
+        self.admin.req("PUT", "/api/settings", {"vat_rate_pct": 8, "excise_petrol": 10})
+        rec = mgr.req("POST", "/api/records", {**self.DAY, "etims_sales": 116000})[1]["record"]
+        self.assertEqual((rec["vat_rate"], rec["total_excise"]), (0.08, 5000))
+        self.assertFalse([a for a in self.admin.req("GET", "/api/alerts")[1]["alerts"] if a["kind"] == "etims_short"])
+        self.assertEqual(Client(self.base).login("kisumu").req("GET", "/api/tax-rates")[1]["vat_rate_pct"], 8)
+
+    def test_staff_dont_see_purchase_vat_and_keep_it_when_saving(self):
+        mgr, staff = Client(self.base).login("kmanager"), Client(self.base).login("kisumu")
+        day = {**self.DAY, "report_date": "2026-10-15"}
+        rid = mgr.req("POST", "/api/records", day)[1]["record"]["id"]
+        seen = staff.req("GET", "/api/records/%d" % rid)[1]
+        for k in ("input_vat", "vat_payable", "total_tax", "input_vat_at_risk"):
+            self.assertNotIn(k, seen)
+        self.assertNotIn("invoice_amount", seen["deliveries"][0])
+        self.assertEqual(seen["deliveries"][0]["etims_invoice"], "KRAINV-001")
+        staff.req("POST", "/api/records", {**seen, "etims_sales": 116000})       # saving back what they saw
+        full = mgr.req("GET", "/api/records/%d" % rid)[1]
+        self.assertEqual([d["invoice_amount"] for d in full["deliveries"]], [1160000, 232000])
+        self.assertEqual(full["input_vat"], 160000)
+        self.assertEqual(staff.req("GET", "/api/reports/vat?month=2026-10")[0], 403)
+
+    def test_monthly_vat_summary(self):
+        mgr = Client(self.base).login("kmanager")
+        mgr.req("POST", "/api/records", {**self.DAY, "etims_sales": 116000})
+        mgr.req("POST", "/api/records", {**self.DAY, "report_date": "2026-10-13", "deliveries": []})
+        rep = mgr.req("GET", "/api/reports/vat?month=2026-10")[1]
+        t = rep["totals"]
+        self.assertEqual((t["days"], t["output_vat"], t["input_vat"], t["vat_payable"]), (2, 32000, 160000, -128000))
+        self.assertEqual(rep["missing_etims"], [{"date": "2026-10-13", "station": "Moiben Branch"}])
+        csv_text = mgr.req("GET", "/api/reports/vat.csv?month=2026-10")[1]
+        self.assertIn("VAT payable (KES)", csv_text)
+        self.assertIn("Days with no eTIMS sales figure", csv_text)
